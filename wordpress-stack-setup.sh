@@ -6,34 +6,12 @@
 # Date: March 13, 2025
 #
 # Install with this command:
-# curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash
+# sudo curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/install.sh | bash
 #
-
-# Detect if we're being run through curl
-if [[ -z "$PIVPN_TEST" ]] && [[ ! -t 0 ]] && [[ -z "$WORDPRESS_STACK_INST" ]]; then
-    export WORDPRESS_STACK_INST=1
-    
-    tmpfile=$(mktemp)
-    curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh > "$tmpfile"
-    
-    # Make it executable and run it with sudo if not already root
-    chmod +x "$tmpfile"
-    
-    if [[ $EUID -ne 0 ]]; then
-        sudo WORDPRESS_STACK_INST=1 bash "$tmpfile"
-    else
-        bash "$tmpfile"
-    fi
-    
-    # Remove the temporary file and exit with the installer's exit code
-    ret=$?
-    rm -f "$tmpfile"
-    exit $ret
-fi
 
 # Check if running with sudo
 if [[ $EUID -ne 0 ]]; then
-    echo "Please run this script with sudo or as root."
+    echo "This script must be run with sudo or as root."
     echo "Try: sudo bash $0"
     exit 1
 fi
