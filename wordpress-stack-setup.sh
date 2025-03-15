@@ -7,18 +7,20 @@
 #
 
 # ---- Check if script is being piped via curl ----
-if [ ! -t 0 ]; then
-    # We're being piped - download the script to a temporary file and execute it properly
-    if command -v curl >/dev/null 2>&1; then
-        echo "Downloading WordPress Stack Installer..."
-        curl -sSL -o /tmp/wp-stack-installer.sh https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh
-        chmod +x /tmp/wp-stack-installer.sh
-        exec sudo bash /tmp/wp-stack-installer.sh
-        exit 0
-    else
-        echo "Error: This script requires curl to be installed when run via pipe."
-        exit 1
-    fi
+# This approach won't work with piping, so let's recommend the proper method
+if [ ! -t 0 ] && [ "${DIRECT_EXEC}" != "true" ]; then
+    echo "This is an interactive script and cannot be piped directly through bash."
+    echo "Please use one of these methods instead:"
+    echo ""
+    echo "Method 1: Download and then run (recommended)"
+    echo "curl -sSL -o wp-stack.sh https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh"
+    echo "chmod +x wp-stack.sh"
+    echo "sudo ./wp-stack.sh"
+    echo ""
+    echo "Method 2: Using bash -c (alternative)"
+    echo "curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash -c 'DIRECT_EXEC=true bash'"
+    echo ""
+    exit 1
 fi
 
 # Check if running with sudo
