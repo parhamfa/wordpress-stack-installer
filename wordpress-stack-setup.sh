@@ -6,7 +6,9 @@
 # Date: March 13, 2025
 #
 # Install with this command:
-# sudo curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/install.sh | bash
+# curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh -o wp-stack.sh
+# chmod +x wp-stack.sh
+# sudo ./wp-stack.sh
 #
 
 # Check if running with sudo
