@@ -5,6 +5,37 @@
 # Author: Parham Fatemi
 # Date: March 13, 2025
 #
+# Install with this command:
+# curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash
+#
+
+# --- Piped Execution Handling ---
+# This section handles execution when the script is piped through curl | bash
+
+# Check if we're being run with sudo
+if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run with sudo or as root."
+    echo "Try: curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash"
+    exit 1
+fi
+
+# Check if we're being run through a pipe (like curl | bash)
+if [ ! -t 0 ] && [ -z "$WPSTACK_SELF_EXEC" ]; then
+    # We're being piped but haven't handled it yet
+    # Download our script and execute it properly to handle interactive prompts
+    echo ":: Setting up for interactive execution..."
+    TMP_SCRIPT=$(mktemp)
+    curl -sSL -o "$TMP_SCRIPT" "https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh"
+    chmod +x "$TMP_SCRIPT"
+    export WPSTACK_SELF_EXEC=1
+    echo ":: Starting WordPress Stack Installer..."
+    script -qec "$TMP_SCRIPT" /dev/null
+    RET=$?
+    rm -f "$TMP_SCRIPT"
+    exit $RET
+fi
+
+# --- Regular Script Execution Begins Here ---
 
 # ---- Check if script is being piped via curl ----
 # This approach won't work with piping, so let's recommend the proper method
