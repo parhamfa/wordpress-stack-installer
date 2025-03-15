@@ -50,10 +50,10 @@ Created by Parham Fatemi
 Install the WordPress Stack with a single command:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | bash
+sudo bash <(curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh)
 ```
 
-The script will automatically handle downloading and proper execution, then guide you through the interactive setup process.
+The script will guide you through the interactive setup process to customize your WordPress stack.
 
 ## Manual Installation
 
