@@ -696,7 +696,7 @@ configure_ssl() {
     
     # Ask about certificate type
     print_message "Certificate types:" "info"
-    print_message "1) Standard (only covers $domain and www.$domain)" "info"
+    print_message "1) Standard (only covers $domain)" "info"
     print_message "2) Wildcard (covers *.$domain - all subdomains)" "info"
     read -p "$(echo -e "${BLUE}Select certificate type [1-2]:${NC} ")" cert_choice
     
