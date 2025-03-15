@@ -989,6 +989,12 @@ show_menu() {
 list_wordpress_sites() {
     print_message "WordPress Sites on this Server" "header"
     
+    # Create /var/www if it doesn't exist
+    if [ ! -d "/var/www" ]; then
+        print_message "Directory /var/www does not exist yet. No WordPress sites installed." "warning"
+        return
+    fi
+    
     # Find all wp-config.php files
     local configs=$(find /var/www -name "wp-config.php" -type f 2>/dev/null)
     
