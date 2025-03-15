@@ -816,7 +816,7 @@ EOL
         sudo systemctl restart nginx
     else
         # Standard certificate with Nginx plugin
-        sudo certbot --nginx -d "$domain" -d "www.$domain" --non-interactive --agree-tos --email "admin@$domain"
+        sudo certbot --nginx -d "$domain" --non-interactive --agree-tos --email "admin@$domain"
         
         if [ $? -ne 0 ]; then
             print_message "Failed to obtain SSL certificate. Check your domain configuration." "error"
