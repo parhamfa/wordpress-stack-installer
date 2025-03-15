@@ -4,6 +4,8 @@
 
 A robust bash script with a terminal-based UI that simplifies the installation and management of a complete WordPress stack, including NGINX, MySQL, PHP, phpMyAdmin, and SSL certificates via Certbot.
 
+Created by Parham Fatemi
+
 ![WordPress Stack Installer Screenshot](screenshot.png)
 
 ## Features
@@ -45,11 +47,13 @@ A robust bash script with a terminal-based UI that simplifies the installation a
 
 ## Quick Installation
 
-Run this command in your terminal to download and start the installer:
+To install the WordPress Stack, simply run:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash
 ```
+
+That's it! The script will automatically handle all the details of installation, presenting you with interactive prompts to customize your WordPress stack.
 
 ## Manual Installation
 
@@ -64,7 +68,7 @@ cd wordpress-stack-installer
 chmod +x wordpress-stack-setup.sh
 
 # Run the installer
-./wordpress-stack-setup.sh
+sudo ./wordpress-stack-setup.sh
 ```
 
 ## Usage
