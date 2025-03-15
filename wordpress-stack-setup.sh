@@ -180,7 +180,7 @@ get_installed_components() {
     fi
     
     # Check WordPress (This is a simple check, might need refinement)
-    if [ -f "/var/www/html/wp-config.php" ] || find /var/www -name "wp-config.php" -type f | grep -q .; then
+    if [ -d "/var/www" ] && ([ -f "/var/www/html/wp-config.php" ] || find /var/www -name "wp-config.php" -type f 2>/dev/null | grep -q .); then
         components+=("wordpress")
     fi
     
@@ -1114,9 +1114,6 @@ main() {
     
     # Check system requirements
     check_system_requirements
-    
-    # Wait for the user to review system requirements information
-    read -p "$(echo -e "${BLUE}Press Enter to continue to the main menu...${NC} ")" pause
     
     # Show initial banner without clearing screen (first time only)
     show_banner "nobreak"
