@@ -2,9 +2,31 @@
 #
 # WordPress Complete Stack Installation & Management Script
 # Installs and configures: WordPress, MySQL, phpMyAdmin, Nginx, PHP, and SSL (certbot)
-# Author: Claude
+# Author: Parham Fatemi
 # Date: March 13, 2025
 #
+
+# ---- Check if script is being piped via curl ----
+if [ ! -t 0 ]; then
+    # We're being piped - download the script to a temporary file and execute it properly
+    if command -v curl >/dev/null 2>&1; then
+        echo "Downloading WordPress Stack Installer..."
+        curl -sSL -o /tmp/wp-stack-installer.sh https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh
+        chmod +x /tmp/wp-stack-installer.sh
+        exec sudo bash /tmp/wp-stack-installer.sh
+        exit 0
+    else
+        echo "Error: This script requires curl to be installed when run via pipe."
+        exit 1
+    fi
+fi
+
+# Check if running with sudo
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run this script with sudo or as root."
+    echo "Try: sudo bash $0"
+    exit 1
+fi
 
 # ---- Color definitions for terminal UI ----
 RED='\033[0;31m'
@@ -139,6 +161,8 @@ check_system_requirements() {
     fi
     
     print_message "System requirements check passed." "success"
+    # Add a pause here to allow reading the system check results
+    read -p "$(echo -e "${BLUE}Press Enter to continue...${NC} ")" pause
 }
 
 # ---- Function to get current installed components ----
@@ -1095,6 +1119,9 @@ main() {
     # Check system requirements
     check_system_requirements
     
+    # Wait for the user to review system requirements information
+    read -p "$(echo -e "${BLUE}Press Enter to continue to the main menu...${NC} ")" pause
+    
     # Show initial banner without clearing screen (first time only)
     show_banner "nobreak"
     
@@ -1146,6 +1173,7 @@ main() {
                     read -p "$(echo -e "${BLUE}Press Enter to return to the main menu...${NC} ")" pause
                 else
                     print_message "Complete stack not installed. Please install the complete stack first." "error"
+                    read -p "$(echo -e "${BLUE}Press Enter to continue...${NC} ")" pause
                 fi
                 ;;
             3)
@@ -1159,6 +1187,7 @@ main() {
                     configure_ssl "$ssl_domain"
                 else
                     print_message "Certbot not installed. Please install the complete stack first." "error"
+                    read -p "$(echo -e "${BLUE}Press Enter to continue...${NC} ")" pause
                 fi
                 ;;
             4)
@@ -1177,6 +1206,7 @@ main() {
                 ;;
             *)
                 print_message "Invalid choice. Please try again." "error"
+                read -p "$(echo -e "${BLUE}Press Enter to continue...${NC} ")" pause
                 ;;
         esac
     done
