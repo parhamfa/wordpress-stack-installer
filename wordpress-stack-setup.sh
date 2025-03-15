@@ -9,53 +9,30 @@
 # curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash
 #
 
-# --- Piped Execution Handling ---
-# This section handles execution when the script is piped through curl | bash
-
-# Check if we're being run with sudo
-if [[ $EUID -ne 0 ]]; then
-    echo "This script must be run with sudo or as root."
-    echo "Try: curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash"
-    exit 1
-fi
-
-# Check if we're being run through a pipe (like curl | bash)
-if [ ! -t 0 ] && [ -z "$WPSTACK_SELF_EXEC" ]; then
-    # We're being piped but haven't handled it yet
-    # Download our script and execute it properly to handle interactive prompts
-    echo ":: Setting up for interactive execution..."
-    TMP_SCRIPT=$(mktemp)
-    curl -sSL -o "$TMP_SCRIPT" "https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh"
-    chmod +x "$TMP_SCRIPT"
-    export WPSTACK_SELF_EXEC=1
-    echo ":: Starting WordPress Stack Installer..."
-    script -qec "$TMP_SCRIPT" /dev/null
-    RET=$?
-    rm -f "$TMP_SCRIPT"
-    exit $RET
-fi
-
-# --- Regular Script Execution Begins Here ---
-
-# ---- Check if script is being piped via curl ----
-# This approach won't work with piping, so let's recommend the proper method
-if [ ! -t 0 ] && [ "${DIRECT_EXEC}" != "true" ]; then
-    echo "This is an interactive script and cannot be piped directly through bash."
-    echo "Please use one of these methods instead:"
-    echo ""
-    echo "Method 1: Download and then run (recommended)"
-    echo "curl -sSL -o wp-stack.sh https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh"
-    echo "chmod +x wp-stack.sh"
-    echo "sudo ./wp-stack.sh"
-    echo ""
-    echo "Method 2: Using bash -c (alternative)"
-    echo "curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh | sudo bash -c 'DIRECT_EXEC=true bash'"
-    echo ""
-    exit 1
+# Detect if we're being run through curl
+if [[ -z "$PIVPN_TEST" ]] && [[ ! -t 0 ]] && [[ -z "$WORDPRESS_STACK_INST" ]]; then
+    export WORDPRESS_STACK_INST=1
+    
+    tmpfile=$(mktemp)
+    curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh > "$tmpfile"
+    
+    # Make it executable and run it with sudo if not already root
+    chmod +x "$tmpfile"
+    
+    if [[ $EUID -ne 0 ]]; then
+        sudo WORDPRESS_STACK_INST=1 bash "$tmpfile"
+    else
+        bash "$tmpfile"
+    fi
+    
+    # Remove the temporary file and exit with the installer's exit code
+    ret=$?
+    rm -f "$tmpfile"
+    exit $ret
 fi
 
 # Check if running with sudo
-if [ "$EUID" -ne 0 ]; then
+if [[ $EUID -ne 0 ]]; then
     echo "Please run this script with sudo or as root."
     echo "Try: sudo bash $0"
     exit 1
