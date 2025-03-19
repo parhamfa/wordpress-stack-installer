@@ -364,42 +364,45 @@ install_openlitespeed() {
         return 1
     fi
     
-    # Make the installer executable and run it with no prompts (--quiet)
+    # Make the installer executable
     chmod +x /tmp/ols_install.sh
-    sudo bash /tmp/ols_install.sh --quiet
+    
+    # Generate a random password for OLS admin
+    OLS_ADMIN_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
+    
+    # Run the installer with options to set admin password and use PHP 8.3
+    print_message "Running OpenLiteSpeed installer (this may take a few minutes)..." "info"
+    sudo bash /tmp/ols_install.sh --adminpassword="$OLS_ADMIN_PASSWORD" --lsphp="83" --quiet
     
     if [ $? -ne 0 ]; then
         print_message "Failed to install OpenLiteSpeed." "error"
         return 1
     fi
     
-    # Generate a secure admin password if not provided
-    if [ -z "$OLS_ADMIN_PASSWORD" ]; then
-        OLS_ADMIN_PASSWORD=$(openssl rand -base64 12)
-        
-        # Save the password to a secure file that only root can read
-        echo "$OLS_ADMIN_PASSWORD" | sudo tee /root/.ols_admin_password > /dev/null
-        sudo chmod 600 /root/.ols_admin_password
-        
-        print_message "----------------------------------------" "warning"
-        print_message "IMPORTANT: OpenLiteSpeed ADMIN PASSWORD GENERATED" "warning"
-        print_message "Password: $OLS_ADMIN_PASSWORD" "warning"
-        print_message "This password has been saved to /root/.ols_admin_password" "warning"
-        print_message "PLEASE WRITE THIS PASSWORD DOWN NOW!" "warning"
-        print_message "WebAdmin URL: https://YOUR_SERVER_IP:$OLS_ADMIN_PORT/" "warning"
-        print_message "Username: admin" "warning"
-        print_message "----------------------------------------" "warning"
-        
-        # Make sure user acknowledges the password
-        read -p "$(echo -e "${YELLOW}Have you saved this password? Type 'yes' to confirm:${NC} ")" confirm
-        if [ "$confirm" != "yes" ]; then
-            print_message "Please save the OpenLiteSpeed admin password before continuing." "error"
-            exit 1
-        fi
+    # Check if the password was set or if the installer generated its own
+    if [ -f "/usr/local/lsws/password" ]; then
+        # The installer has created its own password file, let's read it
+        OLS_ADMIN_PASSWORD=$(sudo cat /usr/local/lsws/password)
     fi
     
-    # Set the admin password
-    /usr/local/lsws/admin/misc/admpass.sh admin "$OLS_ADMIN_PASSWORD"
+    # Save the password to our own secure file
+    echo "$OLS_ADMIN_PASSWORD" | sudo tee /root/.ols_admin_password > /dev/null
+    sudo chmod 600 /root/.ols_admin_password
+    
+    print_message "----------------------------------------" "warning"
+    print_message "IMPORTANT: OpenLiteSpeed ADMIN PASSWORD" "warning"
+    print_message "Password: $OLS_ADMIN_PASSWORD" "warning"
+    print_message "This password has been saved to /root/.ols_admin_password" "warning"
+    print_message "WebAdmin URL: https://YOUR_SERVER_IP:$OLS_ADMIN_PORT/" "warning"
+    print_message "Username: admin" "warning"
+    print_message "----------------------------------------" "warning"
+    
+    # Make sure user acknowledges the password
+    read -p "$(echo -e "${YELLOW}Have you saved this password? Type 'yes' to confirm:${NC} ")" confirm
+    if [ "$confirm" != "yes" ]; then
+        print_message "Please save the OpenLiteSpeed admin password before continuing." "error"
+        exit 1
+    fi
     
     # Configure OpenLiteSpeed to work with WordPress
     print_message "Configuring OpenLiteSpeed for WordPress..." "info"
