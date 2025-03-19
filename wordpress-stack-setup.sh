@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # WordPress Complete Stack Installation & Management Script
-# Installs and configures: WordPress, MySQL, phpMyAdmin, Nginx/OpenLiteSpeed, PHP, and SSL (certbot)
+# Installs and configures: WordPress, MySQL, phpMyAdmin, Nginx/OpenLiteSpeed, PHP (multiple versions), and SSL (certbot)
 # Author: Parham Fatemi
 # Date: March 19, 2025
 #
@@ -38,6 +38,7 @@ OLS_VHOSTS_DIR="/usr/local/lsws/conf/vhosts"
 OLS_ADMIN_PORT="7080"
 OLS_ADMIN_PASSWORD=""
 PHP_VERSION="8.2" # Default PHP version to install
+AVAILABLE_PHP_VERSIONS=("7.4" "8.0" "8.1" "8.2" "8.3")
 MYSQL_ROOT_PASSWORD=""
 DOMAIN_NAME=""
 WORDPRESS_DB_NAME=""
@@ -179,9 +180,17 @@ get_installed_components() {
         components+=("mysql")
     fi
     
-    # Check PHP
+    # Check PHP - any version
     if command_exists php; then
         components+=("php")
+    else
+        # Also check for PHP-FPM or LSPHP installations that might not have the CLI symlink
+        for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
+            if [ -d "/etc/php/$version" ] || [ -d "/usr/local/lsws/lsphp$version" ]; then
+                components+=("php")
+                break
+            fi
+        done
     fi
     
     # Check phpMyAdmin
@@ -221,6 +230,46 @@ select_web_server() {
             print_message "Nginx selected as web server." "success"
             ;;
     esac
+}
+
+# ---- Function to select PHP version ----
+select_php_version() {
+    print_message "PHP Version Selection" "header"
+    echo -e "Available PHP versions:"
+    
+    for i in "${!AVAILABLE_PHP_VERSIONS[@]}"; do
+        local version="${AVAILABLE_PHP_VERSIONS[$i]}"
+        if [ "$version" = "$PHP_VERSION" ]; then
+            echo -e "$((i+1))) ${BOLD}PHP ${version}${NC} (Default)"
+        else
+            echo -e "$((i+1))) ${BOLD}PHP ${version}${NC}"
+        fi
+    done
+    echo ""
+    
+    local max_option=${#AVAILABLE_PHP_VERSIONS[@]}
+    read -p "$(echo -e "${BLUE}Select PHP version [1-${max_option}, default: PHP ${PHP_VERSION}]:${NC} ")" version_choice
+    
+    # Check if input is a number and in valid range
+    if [[ "$version_choice" =~ ^[0-9]+$ && "$version_choice" -ge 1 && "$version_choice" -le "$max_option" ]]; then
+        PHP_VERSION="${AVAILABLE_PHP_VERSIONS[$((version_choice-1))]}"
+    fi
+    
+    print_message "PHP ${PHP_VERSION} selected." "success"
+    
+    # Check if PHP version is compatible with chosen web server
+    if [ "$WEB_SERVER" = "openlitespeed" ]; then
+        # For OpenLiteSpeed, check if the selected PHP version is available as LSPHP
+        if ! apt-cache show "lsphp${PHP_VERSION}" &>/dev/null; then
+            print_message "PHP ${PHP_VERSION} is not available for OpenLiteSpeed. Some versions may not be in default repositories." "warning"
+            print_message "The script will try to install it anyway, but may fall back to PHP 8.0 if installation fails." "warning"
+        fi
+    else
+        # For Nginx, check if the selected PHP version is available as PHP-FPM
+        if ! apt-cache show "php${PHP_VERSION}-fpm" &>/dev/null; then
+            print_message "PHP ${PHP_VERSION} is not available in the repositories. Adding PPA for additional PHP versions." "warning"
+        fi
+    fi
 }
 
 # ---- Function to create SSL configuration files ----
@@ -509,10 +558,28 @@ install_mysql() {
 
 # ---- Function to install PHP ----
 install_php() {
+    local php_version_installed=false
+    
+    # Check if any PHP version is already installed
     if command_exists php; then
         local current_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
-        print_message "PHP $current_version is already installed." "info"
-        return 0
+        
+        # If the installed version matches the requested version
+        if [ "$current_version" = "$PHP_VERSION" ]; then
+            print_message "PHP $current_version is already installed." "info"
+            return 0
+        else
+            print_message "PHP $current_version is installed, but PHP $PHP_VERSION was requested." "warning"
+            read -p "$(echo -e "${YELLOW}Do you want to install PHP $PHP_VERSION alongside the existing version? (y/n):${NC} ")" install_another
+            
+            if [ "$install_another" != "y" ]; then
+                print_message "Using existing PHP $current_version installation." "info"
+                PHP_VERSION=$current_version
+                return 0
+            fi
+            
+            php_version_installed=true
+        fi
     fi
     
     print_message "Installing PHP $PHP_VERSION and required extensions..." "header"
@@ -526,47 +593,89 @@ install_php() {
     # Install PHP and required extensions
     if [ "$WEB_SERVER" = "openlitespeed" ]; then
         # For OpenLiteSpeed, we need to install LSPHP
-        sudo apt-get install -y lsphp$PHP_VERSION lsphp$PHP_VERSION-common lsphp$PHP_VERSION-mysql \
-        lsphp$PHP_VERSION-curl lsphp$PHP_VERSION-gd lsphp$PHP_VERSION-intl lsphp$PHP_VERSION-imap \
-        lsphp$PHP_VERSION-mbstring lsphp$PHP_VERSION-opcache lsphp$PHP_VERSION-pdo lsphp$PHP_VERSION-soap \
-        lsphp$PHP_VERSION-xml lsphp$PHP_VERSION-zip
+        print_message "Installing LSPHP $PHP_VERSION for OpenLiteSpeed..." "info"
+        
+        # Try to install LSPHP with all required extensions
+        if ! sudo apt-get install -y lsphp$PHP_VERSION lsphp$PHP_VERSION-common lsphp$PHP_VERSION-mysql \
+            lsphp$PHP_VERSION-curl lsphp$PHP_VERSION-gd lsphp$PHP_VERSION-intl lsphp$PHP_VERSION-imap \
+            lsphp$PHP_VERSION-mbstring lsphp$PHP_VERSION-opcache lsphp$PHP_VERSION-pdo lsphp$PHP_VERSION-soap \
+            lsphp$PHP_VERSION-xml lsphp$PHP_VERSION-zip; then
+            
+            print_message "Failed to install LSPHP $PHP_VERSION. Falling back to LSPHP 8.0..." "warning"
+            PHP_VERSION="8.0"
+            
+            # Try again with PHP 8.0
+            sudo apt-get install -y lsphp$PHP_VERSION lsphp$PHP_VERSION-common lsphp$PHP_VERSION-mysql \
+                lsphp$PHP_VERSION-curl lsphp$PHP_VERSION-gd lsphp$PHP_VERSION-intl lsphp$PHP_VERSION-imap \
+                lsphp$PHP_VERSION-mbstring lsphp$PHP_VERSION-opcache lsphp$PHP_VERSION-pdo lsphp$PHP_VERSION-soap \
+                lsphp$PHP_VERSION-xml lsphp$PHP_VERSION-zip
+        fi
         
         # Create symlink for PHP CLI
-        if [ ! -f "/usr/bin/php" ]; then
+        if [ ! -f "/usr/bin/php" ] || [ "$php_version_installed" = true ]; then
             sudo ln -sf /usr/local/lsws/lsphp$PHP_VERSION/bin/php /usr/bin/php
         fi
         
         # Configure PHP
-        sudo cp /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini.bak
-        sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-        sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-        sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-        sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
+        if [ -f "/usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini" ]; then
+            sudo cp /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini.bak
+            sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
+            sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
+            sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
+            sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
+        else
+            print_message "PHP INI file not found at expected location. PHP settings will use defaults." "warning"
+        fi
         
         # Restart OpenLiteSpeed
         sudo systemctl restart lsws
+        
     else
         # For Nginx, we use PHP-FPM
-        sudo apt-get install -y php$PHP_VERSION php$PHP_VERSION-fpm php$PHP_VERSION-mysql \
-        php$PHP_VERSION-curl php$PHP_VERSION-gd php$PHP_VERSION-mbstring php$PHP_VERSION-xml \
-        php$PHP_VERSION-xmlrpc php$PHP_VERSION-zip php$PHP_VERSION-intl php$PHP_VERSION-soap
+        print_message "Installing PHP-FPM $PHP_VERSION for Nginx..." "info"
+        
+        # Try to install PHP-FPM with all required extensions
+        if ! sudo apt-get install -y php$PHP_VERSION php$PHP_VERSION-fpm php$PHP_VERSION-mysql \
+            php$PHP_VERSION-curl php$PHP_VERSION-gd php$PHP_VERSION-mbstring php$PHP_VERSION-xml \
+            php$PHP_VERSION-xmlrpc php$PHP_VERSION-zip php$PHP_VERSION-intl php$PHP_VERSION-soap; then
+            
+            print_message "Failed to install PHP-FPM $PHP_VERSION. Falling back to PHP 8.0..." "warning"
+            PHP_VERSION="8.0"
+            
+            # Try again with PHP 8.0
+            sudo apt-get install -y php$PHP_VERSION php$PHP_VERSION-fpm php$PHP_VERSION-mysql \
+                php$PHP_VERSION-curl php$PHP_VERSION-gd php$PHP_VERSION-mbstring php$PHP_VERSION-xml \
+                php$PHP_VERSION-xmlrpc php$PHP_VERSION-zip php$PHP_VERSION-intl php$PHP_VERSION-soap
+        fi
         
         # Configure PHP
-        sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
-        sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
-        sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /etc/php/$PHP_VERSION/fpm/php.ini
-        sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /etc/php/$PHP_VERSION/fpm/php.ini
+        if [ -f "/etc/php/$PHP_VERSION/fpm/php.ini" ]; then
+            sudo cp /etc/php/$PHP_VERSION/fpm/php.ini /etc/php/$PHP_VERSION/fpm/php.ini.bak
+            sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
+            sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
+            sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /etc/php/$PHP_VERSION/fpm/php.ini
+            sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /etc/php/$PHP_VERSION/fpm/php.ini
+        else
+            print_message "PHP INI file not found at expected location. PHP settings will use defaults." "warning"
+        fi
         
         # Restart PHP-FPM
         sudo systemctl restart php$PHP_VERSION-fpm
     fi
     
     if [ $? -ne 0 ]; then
-        print_message "Failed to install PHP and extensions." "error"
-        return 1
+        print_message "There were some issues during PHP installation." "warning"
+        print_message "Please check error messages above and consider manually installing any missing extensions." "info"
+    else
+        print_message "PHP $PHP_VERSION installed and configured successfully." "success"
     fi
     
-    print_message "PHP $PHP_VERSION installed and configured successfully." "success"
+    # Provide information about installed PHP version
+    if command_exists php; then
+        local installed_version=$(php -v | head -n 1)
+        print_message "Installed PHP version: $installed_version" "info"
+    fi
+    
     return 0
 }
 
@@ -1440,10 +1549,26 @@ show_menu() {
         echo -e "- MySQL Database: ${RED}Not Installed${NC}"
     fi
     
-    # Check PHP
+    # Check PHP - Now show all installed PHP versions
     if [[ " ${installed_components[@]} " =~ " php " ]]; then
-        local php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
-        echo -e "- PHP: ${GREEN}Installed (v$php_version)${NC}"
+        # Get all installed PHP versions
+        local php_versions=""
+        for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
+            if command_exists "php$version" || [ -d "/etc/php/$version" ] || [ -d "/usr/local/lsws/lsphp$version" ]; then
+                if [ -z "$php_versions" ]; then
+                    php_versions="$version"
+                else
+                    php_versions="$php_versions, $version"
+                fi
+            fi
+        done
+        
+        # Get active PHP version
+        local active_php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
+        echo -e "- PHP: ${GREEN}Installed (Active: v$active_php_version, Available: $php_versions)${NC}"
+        
+        # Set the active PHP version as the current PHP_VERSION
+        PHP_VERSION=$active_php_version
     else
         echo -e "- PHP: ${RED}Not Installed${NC}"
     fi
@@ -1597,12 +1722,35 @@ show_system_info() {
         echo ""
     fi
     
-    # PHP Information
+    # PHP Information - Show all installed versions
+    echo -e "${BOLD}PHP Versions:${NC}"
     if command_exists php; then
-        echo -e "${BOLD}PHP Version:${NC}"
-        php -v | head -1
-        echo ""
+        echo -e "Active PHP version (CLI): $(php -v | head -1)"
     fi
+    
+    # Check for installed PHP-FPM versions
+    echo -e "\nInstalled PHP-FPM versions:"
+    for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
+        if [ -d "/etc/php/$version/fpm" ]; then
+            local status=$(systemctl is-active php$version-fpm 2>/dev/null)
+            if [ "$status" = "active" ]; then
+                echo -e "- PHP $version: ${GREEN}Installed and Active${NC}"
+            else
+                echo -e "- PHP $version: ${YELLOW}Installed but Inactive${NC}"
+            fi
+        fi
+    done
+    
+    # Check for installed LSPHP versions
+    if [ -d "/usr/local/lsws" ]; then
+        echo -e "\nInstalled LSPHP versions for OpenLiteSpeed:"
+        for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
+            if [ -d "/usr/local/lsws/lsphp$version" ]; then
+                echo -e "- LSPHP $version: ${GREEN}Installed${NC}"
+            fi
+        done
+    fi
+    echo ""
     
     # MySQL Information
     if command_exists mysql; then
@@ -1625,6 +1773,9 @@ install_complete_stack() {
     
     # Ask user to select web server
     select_web_server
+    
+    # Ask user to select PHP version
+    select_php_version
     
     # Update system packages
     update_system
@@ -1691,6 +1842,17 @@ main() {
                         WEB_SERVER="nginx"
                     elif [[ " ${installed_components[@]} " =~ " openlitespeed " ]]; then
                         WEB_SERVER="openlitespeed"
+                    fi
+                    
+                    # Get active PHP version
+                    if command_exists php; then
+                        PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
+                    fi
+                    
+                    # Allow user to select a different PHP version if they want
+                    read -p "$(echo -e "${BLUE}Current PHP version is $PHP_VERSION. Do you want to use a different version? (y/n):${NC} ")" change_php
+                    if [ "$change_php" = "y" ]; then
+                        select_php_version
                     fi
                     
                     collect_site_info
