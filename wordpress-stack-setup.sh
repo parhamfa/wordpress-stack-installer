@@ -1267,6 +1267,51 @@ configure_ssl() {
         return 1
     fi
     
+    # Find the document root based on web server
+    local site_path=""
+    
+    if [ "$WEB_SERVER" = "nginx" ]; then
+        # For Nginx, find the document root from the config
+        for conf in "$NGINX_AVAILABLE"/*.conf; do
+            if [ -f "$conf" ] && grep -q "server_name.*$domain" "$conf"; then
+                site_path=$(grep "root" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
+                break
+            fi
+        done
+    elif [ "$WEB_SERVER" = "openlitespeed" ]; then
+        # For OpenLiteSpeed, find the document root from virtual host config
+        if [ -d "$OLS_VHOSTS_DIR/$domain" ] && [ -f "$OLS_VHOSTS_DIR/$domain/vhconf.conf" ]; then
+            site_path=$(grep "docRoot" "$OLS_VHOSTS_DIR/$domain/vhconf.conf" | head -1 | awk '{print $2}')
+        fi
+    fi
+    
+    if [ -z "$site_path" ]; then
+        print_message "Could not determine the document root for $domain. Please make sure the site is properly configured." "error"
+        return 1
+    fi
+    
+    print_message "Found document root: $site_path" "info"
+    
+    # Ensure the .well-known/acme-challenge directory exists and has proper permissions
+    sudo mkdir -p "$site_path/.well-known/acme-challenge"
+    sudo chown -R www-data:www-data "$site_path/.well-known"
+    sudo chmod -R 755 "$site_path/.well-known"
+    
+    # Create a test file to verify the directory is accessible
+    echo "certbot-test" | sudo tee "$site_path/.well-known/acme-challenge/test.txt" > /dev/null
+    print_message "Created test file at $site_path/.well-known/acme-challenge/test.txt" "info"
+    print_message "Please verify this file is accessible at http://$domain/.well-known/acme-challenge/test.txt" "warning"
+    read -p "$(echo -e "${YELLOW}Is the test file accessible? (y/n):${NC} ")" test_accessible
+    
+    if [ "$test_accessible" != "y" ]; then
+        print_message "The test file is not accessible. Please check your web server configuration." "error"
+        print_message "For OpenLiteSpeed, make sure the configuration includes a context for /.well-known/" "info"
+        return 1
+    fi
+    
+    # Remove the test file
+    sudo rm -f "$site_path/.well-known/acme-challenge/test.txt"
+    
     if [ "$cert_type" = "wildcard" ]; then
         print_message "Requesting wildcard certificate for *.$domain" "info"
         print_message "NOTE: Wildcard certificates require DNS validation." "warning"
@@ -1288,7 +1333,7 @@ configure_ssl() {
         if [ "$WEB_SERVER" = "nginx" ]; then
             print_message "Configuring Nginx to use the wildcard certificate..." "info"
             for conf in "$NGINX_AVAILABLE"/*.conf; do
-                if grep -q "server_name.*$domain" "$conf"; then
+                if [ -f "$conf" ] && grep -q "server_name.*$domain" "$conf"; then
                     # Create a backup of the original file
                     sudo cp "$conf" "${conf}.bak"
                     
@@ -1372,24 +1417,18 @@ EOL
         elif [ "$WEB_SERVER" = "openlitespeed" ]; then
             print_message "Configuring OpenLiteSpeed to use the wildcard certificate..." "info"
             
-            # Add SSL to virtual host configuration
-            for vh_dir in "$OLS_VHOSTS_DIR"/*; do
-                if [ -d "$vh_dir" ] && [ -f "$vh_dir/vhconf.conf" ]; then
-                    local vh_name=$(basename "$vh_dir")
-                    
-                    if grep -q "vhDomain.*$domain" "$vh_dir/vhconf.conf"; then
-                        # Add SSL configuration to the virtual host
-                        if ! grep -q "vhssl" "$vh_dir/vhconf.conf"; then
-                            cat >> "$vh_dir/vhconf.conf" << EOL
+            # Add SSL configuration to the virtual host
+            if [ -f "$OLS_VHOSTS_DIR/$domain/vhconf.conf" ]; then
+                # Check if SSL configuration already exists
+                if ! grep -q "vhssl" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
+                    # Add SSL configuration
+                    cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
 
 vhssl  {
   keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
   certFile                /etc/letsencrypt/live/$domain/fullchain.pem
   certChain               1
-  sslProtocol             24
-  renegProtection         1
-  sslSessionCache         1
-  sslSessionTickets       0
+  sslProtocol             30
   enableECDHE             1
   enableDHE               1
   ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
@@ -1397,23 +1436,57 @@ vhssl  {
   ocspStapling            1
 }
 EOL
-                            print_message "Added SSL configuration to $vh_name" "success"
-                        fi
-                        
-                        # Add HTTP to HTTPS redirection
-                        if ! grep -q "RewriteCond %{HTTPS} off" "$vh_dir/vhconf.conf"; then
-                            # Add rewrite rules for HTTP to HTTPS redirection
-                            sed -i "/rewrite  {/a \  rules                   <<<END_RULES\nRewriteEngine On\nRewriteCond %{HTTPS} off\nRewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\n  END_RULES" "$vh_dir/vhconf.conf"
-                            print_message "Added HTTP to HTTPS redirection for $vh_name" "success"
-                        fi
-                    fi
+                    print_message "Added SSL configuration to virtual host" "success"
                 fi
-            done
+                
+                # Add HTTP to HTTPS redirection if not already there
+                if ! grep -q "RewriteCond %{HTTPS} off" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
+                    # Update rewrite rules to include HTTP to HTTPS redirection
+                    if grep -q "rewrite.*{" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
+                        # Add to existing rewrite rules
+                        sudo sed -i '/rewrite.*{/,/}/c\
+rewrite  {\
+  enable                  1\
+  autoLoadHtaccess        1\
+  rules                   <<<EOT\
+RewriteEngine On\
+RewriteCond %{HTTPS} off\
+RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\
+RewriteBase /\
+RewriteRule ^index\.php$ - [L]\
+RewriteCond %{REQUEST_FILENAME} !-f\
+RewriteCond %{REQUEST_FILENAME} !-d\
+RewriteRule . /index.php [L]\
+  EOT\
+}' "$OLS_VHOSTS_DIR/$domain/vhconf.conf"
+                    else
+                        # Add new rewrite section
+                        cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
+
+rewrite  {
+  enable                  1
+  autoLoadHtaccess        1
+  rules                   <<<EOT
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+RewriteBase /
+RewriteRule ^index\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+  EOT
+}
+EOL
+                    fi
+                    print_message "Added HTTP to HTTPS redirection" "success"
+                fi
+            fi
             
-            # Update listeners to enable SSL
-            if ! grep -q "listener HTTPS" "$OLS_CONF_DIR/httpd_config.conf"; then
+            # Configure HTTPS listener if it doesn't exist
+            if ! grep -q "listener HTTPS" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
                 # Add HTTPS listener
-                cat >> "$OLS_CONF_DIR/httpd_config.conf" << EOL
+                cat > /tmp/https_listener.conf << EOL
 
 listener HTTPS {
   address                 *:443
@@ -1421,10 +1494,7 @@ listener HTTPS {
   keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
   certFile                /etc/letsencrypt/live/$domain/fullchain.pem
   certChain               1
-  sslProtocol             24
-  renegProtection         1
-  sslSessionCache         1
-  sslSessionTickets       0
+  sslProtocol             30
   enableECDHE             1
   enableDHE               1
   ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
@@ -1434,17 +1504,19 @@ listener HTTPS {
   map                     *.$domain $domain
 }
 EOL
+                sudo bash -c "cat /tmp/https_listener.conf >> $OLS_CONF_DIR/httpd_config.conf"
                 print_message "Added HTTPS listener for OpenLiteSpeed" "success"
             else
-                # Add domain mapping to existing HTTPS listener
-                sudo sed -i "/listener HTTPS/,/}/s/}/  map                     $domain $domain\n  map                     *.$domain $domain\n}/" "$OLS_CONF_DIR/httpd_config.conf"
-                print_message "Added domain mapping to HTTPS listener" "success"
+                # Add domain mapping to existing HTTPS listener if not already there
+                if ! grep -q "map.*$domain" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
+                    sudo sed -i "/listener HTTPS/,/}/s/}/  map                     $domain $domain\n  map                     *.$domain $domain\n}/" "$OLS_CONF_DIR/httpd_config.conf"
+                    print_message "Added domain mapping to HTTPS listener" "success"
+                fi
             fi
             
             # Restart OpenLiteSpeed
             sudo systemctl restart lsws
         fi
-        
     else
         # Standard certificate
         if [ "$WEB_SERVER" = "nginx" ]; then
@@ -1455,50 +1527,42 @@ EOL
                 print_message "Failed to obtain SSL certificate. Check your domain configuration." "error"
                 return 1
             fi
-            
         elif [ "$WEB_SERVER" = "openlitespeed" ]; then
             # Use webroot plugin
-            local site_path=""
+            print_message "Using webroot method for OpenLiteSpeed SSL..." "info"
             
-            # Find the site path from OpenLiteSpeed configs
-            for vh_dir in "$OLS_VHOSTS_DIR"/*; do
-                if [ -d "$vh_dir" ] && [ -f "$vh_dir/vhconf.conf" ]; then
-                    if grep -q "vhDomain.*$domain" "$vh_dir/vhconf.conf"; then
-                        site_path=$(grep "docRoot" "$vh_dir/vhconf.conf" | head -1 | awk '{print $2}')
-                        break
-                    fi
-                fi
-            done
-            
-            if [ -z "$site_path" ]; then
-                print_message "Could not find site path for $domain. SSL configuration aborted." "error"
-                return 1
-            fi
-            
-            # Get the certificate using webroot plugin
+            # Run certbot with webroot plugin
             sudo certbot certonly --webroot --webroot-path="$site_path" -d "$domain" --agree-tos --email "admin@$domain" --non-interactive
             
             if [ $? -ne 0 ]; then
                 print_message "Failed to obtain SSL certificate. Check your domain configuration." "error"
-                return 1
+                print_message "Trying to troubleshoot the issue..." "info"
+                
+                # Create a very permissive .well-known directory that certbot can write to
+                sudo mkdir -p "$site_path/.well-known/acme-challenge"
+                sudo chmod -R 777 "$site_path/.well-known"
+                
+                # Try again with verbose output
+                sudo certbot certonly --webroot --webroot-path="$site_path" -d "$domain" --agree-tos --email "admin@$domain" -v
+                
+                if [ $? -ne 0 ]; then
+                    print_message "SSL certification still failed. Please check your DNS and web server configuration." "error"
+                    return 1
+                fi
             fi
             
-            # Add SSL to virtual host configuration
-            for vh_dir in "$OLS_VHOSTS_DIR"/*; do
-                if [ -d "$vh_dir" ] && [ -f "$vh_dir/vhconf.conf" ]; then
-                    if grep -q "vhDomain.*$domain" "$vh_dir/vhconf.conf"; then
-                        # Add SSL configuration to the virtual host
-                        if ! grep -q "vhssl" "$vh_dir/vhconf.conf"; then
-                            cat >> "$vh_dir/vhconf.conf" << EOL
+            # Add SSL configuration to OpenLiteSpeed
+            if [ -f "$OLS_VHOSTS_DIR/$domain/vhconf.conf" ]; then
+                # Check if SSL configuration already exists
+                if ! grep -q "vhssl" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
+                    # Add SSL configuration
+                    cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
 
 vhssl  {
   keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
   certFile                /etc/letsencrypt/live/$domain/fullchain.pem
   certChain               1
-  sslProtocol             24
-  renegProtection         1
-  sslSessionCache         1
-  sslSessionTickets       0
+  sslProtocol             30
   enableECDHE             1
   enableDHE               1
   ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
@@ -1506,23 +1570,57 @@ vhssl  {
   ocspStapling            1
 }
 EOL
-                            print_message "Added SSL configuration to virtual host" "success"
-                        fi
-                        
-                        # Add HTTP to HTTPS redirection
-                        if ! grep -q "RewriteCond %{HTTPS} off" "$vh_dir/vhconf.conf"; then
-                            # Add rewrite rules for HTTP to HTTPS redirection
-                            sed -i "/rewrite  {/a \  rules                   <<<END_RULES\nRewriteEngine On\nRewriteCond %{HTTPS} off\nRewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\n  END_RULES" "$vh_dir/vhconf.conf"
-                            print_message "Added HTTP to HTTPS redirection" "success"
-                        fi
-                    fi
+                    print_message "Added SSL configuration to virtual host" "success"
                 fi
-            done
+                
+                # Add HTTP to HTTPS redirection if not already there
+                if ! grep -q "RewriteCond %{HTTPS} off" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
+                    # Update rewrite rules to include HTTP to HTTPS redirection
+                    if grep -q "rewrite.*{" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
+                        # Add to existing rewrite rules
+                        sudo sed -i '/rewrite.*{/,/}/c\
+rewrite  {\
+  enable                  1\
+  autoLoadHtaccess        1\
+  rules                   <<<EOT\
+RewriteEngine On\
+RewriteCond %{HTTPS} off\
+RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\
+RewriteBase /\
+RewriteRule ^index\.php$ - [L]\
+RewriteCond %{REQUEST_FILENAME} !-f\
+RewriteCond %{REQUEST_FILENAME} !-d\
+RewriteRule . /index.php [L]\
+  EOT\
+}' "$OLS_VHOSTS_DIR/$domain/vhconf.conf"
+                    else
+                        # Add new rewrite section
+                        cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
+
+rewrite  {
+  enable                  1
+  autoLoadHtaccess        1
+  rules                   <<<EOT
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+RewriteBase /
+RewriteRule ^index\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+  EOT
+}
+EOL
+                    fi
+                    print_message "Added HTTP to HTTPS redirection" "success"
+                fi
+            fi
             
-            # Update listeners to enable SSL
-            if ! grep -q "listener HTTPS" "$OLS_CONF_DIR/httpd_config.conf"; then
+            # Configure HTTPS listener if it doesn't exist
+            if ! grep -q "listener HTTPS" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
                 # Add HTTPS listener
-                cat >> "$OLS_CONF_DIR/httpd_config.conf" << EOL
+                cat > /tmp/https_listener.conf << EOL
 
 listener HTTPS {
   address                 *:443
@@ -1530,10 +1628,7 @@ listener HTTPS {
   keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
   certFile                /etc/letsencrypt/live/$domain/fullchain.pem
   certChain               1
-  sslProtocol             24
-  renegProtection         1
-  sslSessionCache         1
-  sslSessionTickets       0
+  sslProtocol             30
   enableECDHE             1
   enableDHE               1
   ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
@@ -1542,11 +1637,14 @@ listener HTTPS {
   map                     $domain $domain
 }
 EOL
+                sudo bash -c "cat /tmp/https_listener.conf >> $OLS_CONF_DIR/httpd_config.conf"
                 print_message "Added HTTPS listener for OpenLiteSpeed" "success"
             else
-                # Add domain mapping to existing HTTPS listener
-                sudo sed -i "/listener HTTPS/,/}/s/}/  map                     $domain $domain\n}/" "$OLS_CONF_DIR/httpd_config.conf"
-                print_message "Added domain mapping to HTTPS listener" "success"
+                # Add domain mapping to existing HTTPS listener if not already there
+                if ! grep -q "map.*$domain.*$domain" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
+                    sudo sed -i "/listener HTTPS/,/}/s/}/  map                     $domain $domain\n}/" "$OLS_CONF_DIR/httpd_config.conf"
+                    print_message "Added domain mapping to HTTPS listener" "success"
+                fi
             fi
             
             # Restart OpenLiteSpeed
