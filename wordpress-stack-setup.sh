@@ -355,18 +355,18 @@ install_openlitespeed() {
     # Install prerequisites
     sudo apt-get install -y wget tar openssl libexpat1 libgeoip1 libpcre3 libxml2
     
-    # Download and run the official OpenLiteSpeed installation script
-    print_message "Downloading the official OpenLiteSpeed installer..." "info"
-    wget -O /tmp/ols_install.sh https://openlitespeed.org/packages/openlitespeed-1.7.sh
+    # Download and run the official OpenLiteSpeed 1-click installer
+    print_message "Downloading the official OpenLiteSpeed 1-click installer..." "info"
+    wget -O /tmp/ols_install.sh https://raw.githubusercontent.com/litespeedtech/ols1clk/master/ols1clk.sh
     
     if [ $? -ne 0 ]; then
         print_message "Failed to download OpenLiteSpeed installer. Check your internet connection." "error"
         return 1
     fi
     
-    # Make the installer executable and run it
+    # Make the installer executable and run it with no prompts (--quiet)
     chmod +x /tmp/ols_install.sh
-    sudo /tmp/ols_install.sh
+    sudo bash /tmp/ols_install.sh --quiet
     
     if [ $? -ne 0 ]; then
         print_message "Failed to install OpenLiteSpeed." "error"
