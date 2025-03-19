@@ -367,22 +367,26 @@ install_openlitespeed() {
     # Make the installer executable
     chmod +x /tmp/ols_install.sh
     
-    # Generate a random password for OLS admin
-    OLS_ADMIN_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
-    
-    # Run the installer with options to set admin password and use PHP 8.3
-    print_message "Running OpenLiteSpeed installer (this may take a few minutes)..." "info"
-    sudo bash /tmp/ols_install.sh --adminpassword="$OLS_ADMIN_PASSWORD" --lsphp="83" --quiet
+    # Run the installer with options to set admin password and use selected PHP version
+    # Convert PHP_VERSION from format like 8.2 to 82 for LSPHP
+    local LSPHP_VERSION=${PHP_VERSION/./}
+    print_message "Running OpenLiteSpeed installer with LSPHP $LSPHP_VERSION (this may take a few minutes)..." "info"
+    sudo bash /tmp/ols_install.sh --lsphp="$LSPHP_VERSION" --quiet
     
     if [ $? -ne 0 ]; then
         print_message "Failed to install OpenLiteSpeed." "error"
         return 1
     fi
     
-    # Check if the password was set or if the installer generated its own
+    # Check if the installer generated its own password
     if [ -f "/usr/local/lsws/password" ]; then
         # The installer has created its own password file, let's read it
         OLS_ADMIN_PASSWORD=$(sudo cat /usr/local/lsws/password)
+    else
+        # Generate our own password
+        OLS_ADMIN_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
+        # Set the admin password
+        /usr/local/lsws/admin/misc/admpass.sh admin "$OLS_ADMIN_PASSWORD"
     fi
     
     # Save the password to our own secure file
@@ -592,6 +596,32 @@ install_php() {
     fi
     
     print_message "Installing PHP $PHP_VERSION and required extensions..." "header"
+    
+    # For OpenLiteSpeed, if LSPHP is already installed, we can skip additional PHP installation
+    if [ "$WEB_SERVER" = "openlitespeed" ]; then
+        if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ] || [ -d "/usr/local/lsws/lsphp${PHP_VERSION/./}" ]; then
+            print_message "LSPHP $PHP_VERSION was already installed with OpenLiteSpeed." "success"
+            
+            # Create symlink for PHP CLI if not exists
+            if [ ! -f "/usr/bin/php" ] || [ "$php_version_installed" = true ]; then
+                # Try both directory formats (with/without dot in version)
+                if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ]; then
+                    sudo ln -sf /usr/local/lsws/lsphp$PHP_VERSION/bin/php /usr/bin/php
+                elif [ -d "/usr/local/lsws/lsphp${PHP_VERSION/./}" ]; then
+                    sudo ln -sf /usr/local/lsws/lsphp${PHP_VERSION/./}/bin/php /usr/bin/php
+                fi
+                print_message "PHP command line symlink created." "info"
+            fi
+            
+            # Provide information about installed PHP version
+            if command_exists php; then
+                local installed_version=$(php -v | head -n 1)
+                print_message "Active PHP version: $installed_version" "info"
+            fi
+            
+            return 0
+        fi
+    fi
     
     # Add PPA for PHP (for Ubuntu)
     if command_exists add-apt-repository; then
@@ -1796,16 +1826,23 @@ install_complete_stack() {
     # Update system packages
     update_system
     
-    # Install components
+    # Install components one by one with clear status messages
     if [ "$WEB_SERVER" = "nginx" ]; then
         install_nginx
     elif [ "$WEB_SERVER" = "openlitespeed" ]; then
         install_openlitespeed
     fi
     
+    print_message "Installing MySQL database..." "header"
     install_mysql
+    
+    print_message "Installing PHP..." "header"
     install_php
+    
+    print_message "Installing phpMyAdmin..." "header"
     install_phpmyadmin
+    
+    print_message "Installing Certbot for SSL..." "header"
     install_certbot
     
     print_message "WordPress stack installation completed successfully!" "success"
