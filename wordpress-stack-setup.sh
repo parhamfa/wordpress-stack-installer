@@ -367,14 +367,33 @@ install_openlitespeed() {
     # Make the installer executable
     chmod +x /tmp/ols_install.sh
     
-    # Run the installer with options to set admin password and use selected PHP version
     # Convert PHP_VERSION from format like 8.2 to 82 for LSPHP
     local LSPHP_VERSION=${PHP_VERSION/./}
+    
+    # Generate a random password
+    OLS_ADMIN_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
+    
     print_message "Running OpenLiteSpeed installer with LSPHP $LSPHP_VERSION (this may take a few minutes)..." "info"
-    sudo bash /tmp/ols_install.sh --lsphp="$LSPHP_VERSION" --quiet
+    
+    # Run the installer with proper arguments format (no equals signs or quotes)
+    cd /tmp
+    sudo bash ols_install.sh --lsphp $LSPHP_VERSION --adminpassword $OLS_ADMIN_PASSWORD -Q
     
     if [ $? -ne 0 ]; then
-        print_message "Failed to install OpenLiteSpeed." "error"
+        print_message "Failed to install OpenLiteSpeed. Trying alternative installation method..." "warning"
+        # Try alternative installation method if the first one fails
+        cd /tmp
+        sudo bash ols_install.sh
+        
+        if [ $? -ne 0 ]; then
+            print_message "Failed to install OpenLiteSpeed with both methods." "error"
+            return 1
+        fi
+    fi
+    
+    # Verify OpenLiteSpeed was actually installed
+    if [ ! -d "/usr/local/lsws" ]; then
+        print_message "OpenLiteSpeed directory not found after installation. Installation failed." "error"
         return 1
     fi
     
@@ -382,11 +401,6 @@ install_openlitespeed() {
     if [ -f "/usr/local/lsws/password" ]; then
         # The installer has created its own password file, let's read it
         OLS_ADMIN_PASSWORD=$(sudo cat /usr/local/lsws/password)
-    else
-        # Generate our own password
-        OLS_ADMIN_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
-        # Set the admin password
-        /usr/local/lsws/admin/misc/admpass.sh admin "$OLS_ADMIN_PASSWORD"
     fi
     
     # Save the password to our own secure file
@@ -408,11 +422,20 @@ install_openlitespeed() {
         exit 1
     fi
     
+    # Check if OpenLiteSpeed service is active
+    if ! systemctl is-active --quiet lsws 2>/dev/null; then
+        print_message "Starting OpenLiteSpeed service..." "info"
+        sudo systemctl enable lsws
+        sudo systemctl start lsws
+    fi
+    
     # Configure OpenLiteSpeed to work with WordPress
     print_message "Configuring OpenLiteSpeed for WordPress..." "info"
     
-    # Create OpenLiteSpeed directories for virtual hosts
-    sudo mkdir -p "$OLS_VHOSTS_DIR"
+    # Create OpenLiteSpeed directories for virtual hosts if they don't exist
+    if [ ! -d "$OLS_VHOSTS_DIR" ]; then
+        sudo mkdir -p "$OLS_VHOSTS_DIR"
+    fi
     
     # Configure firewall if ufw is installed
     if command_exists ufw; then
@@ -1707,20 +1730,20 @@ list_wordpress_sites() {
         
         if [ "$WEB_SERVER" = "nginx" ]; then
             for conf in "$NGINX_AVAILABLE"/*.conf; do
-                if grep -q "$site_path" "$conf"; then
+                if [ -f "$conf" ] && grep -q "$site_path" "$conf"; then
                     domain=$(grep "server_name" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
                     break
                 fi
             done
         elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-            for vh_dir in "$OLS_VHOSTS_DIR"/*; do
-                if [ -d "$vh_dir" ] && [ -f "$vh_dir/vhconf.conf" ]; then
-                    if grep -q "$site_path" "$vh_dir/vhconf.conf"; then
+            if [ -d "$OLS_VHOSTS_DIR" ]; then
+                for vh_dir in "$OLS_VHOSTS_DIR"/*; do
+                    if [ -d "$vh_dir" ] && [ -f "$vh_dir/vhconf.conf" ] && grep -q "$site_path" "$vh_dir/vhconf.conf"; then
                         domain=$(grep "vhDomain" "$vh_dir/vhconf.conf" | head -1 | awk '{print $2}')
                         break
                     fi
-                fi
-            done
+                done
+            fi
         fi
         
         printf "%-4s| %-24s| %-24s| %s\n" "$counter" "$site_path" "${domain:-Unknown}" "${db_name:-Unknown}"
