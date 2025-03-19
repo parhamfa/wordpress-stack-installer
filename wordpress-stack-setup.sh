@@ -596,6 +596,42 @@ install_mysql() {
 install_php() {
     local php_version_installed=false
     
+    # Special case for OpenLiteSpeed - check if LSPHP is already installed
+    if [ "$WEB_SERVER" = "openlitespeed" ] && [ -d "/usr/local/lsws" ]; then
+        # Convert PHP_VERSION from format like 8.2 to 82 for LSPHP directory check
+        local LSPHP_DIR_VERSION=${PHP_VERSION/./}
+        
+        # Check both possible directory structures for LSPHP
+        if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ] || [ -d "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION" ]; then
+            print_message "LSPHP for PHP $PHP_VERSION was already installed with OpenLiteSpeed." "success"
+            
+            # Create symlink for PHP CLI if not exists
+            if [ ! -f "/usr/bin/php" ]; then
+                if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ] && [ -f "/usr/local/lsws/lsphp$PHP_VERSION/bin/php" ]; then
+                    sudo ln -sf "/usr/local/lsws/lsphp$PHP_VERSION/bin/php" /usr/bin/php
+                elif [ -d "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION" ] && [ -f "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION/bin/php" ]; then
+                    sudo ln -sf "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION/bin/php" /usr/bin/php
+                else
+                    # Try to find PHP binary in any LSPHP directory
+                    local php_bin=$(find /usr/local/lsws -name php -type f -executable | grep bin/php | head -1)
+                    if [ -n "$php_bin" ]; then
+                        sudo ln -sf "$php_bin" /usr/bin/php
+                    fi
+                fi
+                print_message "PHP command line symlink created." "info"
+            fi
+            
+            # Provide information about installed PHP version
+            if command_exists php; then
+                local installed_version=$(php -v | head -n 1)
+                print_message "Active PHP version: $installed_version" "info"
+            fi
+            
+            return 0
+        fi
+    fi
+    
+    # Continue with normal PHP installation logic...
     # Check if any PHP version is already installed
     if command_exists php; then
         local current_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
