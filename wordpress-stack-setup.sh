@@ -355,12 +355,18 @@ install_openlitespeed() {
     # Install prerequisites
     sudo apt-get install -y wget tar openssl libexpat1 libgeoip1 libpcre3 libxml2
     
-    # Add OpenLiteSpeed repository
-    wget -O - https://rpms.litespeedtech.com/debian/enable_lst_debian_repo.sh | sudo bash
+    # Download and run the official OpenLiteSpeed installation script
+    print_message "Downloading the official OpenLiteSpeed installer..." "info"
+    wget -O /tmp/ols_install.sh https://openlitespeed.org/packages/openlitespeed-1.7.sh
     
-    # Install OpenLiteSpeed
-    sudo apt-get update
-    sudo apt-get install -y openlitespeed
+    if [ $? -ne 0 ]; then
+        print_message "Failed to download OpenLiteSpeed installer. Check your internet connection." "error"
+        return 1
+    fi
+    
+    # Make the installer executable and run it
+    chmod +x /tmp/ols_install.sh
+    sudo /tmp/ols_install.sh
     
     if [ $? -ne 0 ]; then
         print_message "Failed to install OpenLiteSpeed." "error"
@@ -594,6 +600,13 @@ install_php() {
     if [ "$WEB_SERVER" = "openlitespeed" ]; then
         # For OpenLiteSpeed, we need to install LSPHP
         print_message "Installing LSPHP $PHP_VERSION for OpenLiteSpeed..." "info"
+        
+        # First, check if the OLS repository is properly set up for LSPHP
+        if ! apt-cache search "lsphp$PHP_VERSION" &>/dev/null; then
+            print_message "Setting up LiteSpeed repository for LSPHP..." "info"
+            wget -O - https://rpms.litespeedtech.com/debian/enable_lst_debian_repo.sh | sudo bash
+            sudo apt-get update
+        fi
         
         # Try to install LSPHP with all required extensions
         if ! sudo apt-get install -y lsphp$PHP_VERSION lsphp$PHP_VERSION-common lsphp$PHP_VERSION-mysql \
