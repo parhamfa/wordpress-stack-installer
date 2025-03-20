@@ -1,9 +1,9 @@
 #!/bin/bash
 #
 # WordPress Complete Stack Installation & Management Script
-# Installs and configures: WordPress, MySQL, phpMyAdmin, Nginx/OpenLiteSpeed, PHP (multiple versions), and SSL (certbot)
+# Installs and configures: WordPress, MySQL, phpMyAdmin, Nginx, PHP, and SSL (certbot)
 # Author: Parham Fatemi
-# Date: March 19, 2025
+# Date: March 13, 2025
 #
 # Install with this command:
 # curl -sSL https://raw.githubusercontent.com/parhamfa/wordpress-stack-installer/main/wordpress-stack-setup.sh -o wp-stack.sh
@@ -29,23 +29,17 @@ BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # ---- Global variables ----
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.0.0"
 LOG_FILE="/var/log/wp-stack-installer.log"
 NGINX_AVAILABLE="/etc/nginx/sites-available"
 NGINX_ENABLED="/etc/nginx/sites-enabled"
-OLS_CONF_DIR="/usr/local/lsws/conf"
-OLS_VHOSTS_DIR="/usr/local/lsws/conf/vhosts"
-OLS_ADMIN_PORT="7080"
-OLS_ADMIN_PASSWORD=""
 PHP_VERSION="8.2" # Default PHP version to install
-AVAILABLE_PHP_VERSIONS=("7.4" "8.0" "8.1" "8.2" "8.3")
 MYSQL_ROOT_PASSWORD=""
 DOMAIN_NAME=""
 WORDPRESS_DB_NAME=""
 WORDPRESS_DB_USER=""
 WORDPRESS_DB_PASSWORD=""
 WP_INSTALL_PATH=""
-WEB_SERVER="nginx" # Default web server
 
 # ---- Function to log messages ----
 log_message() {
@@ -170,27 +164,14 @@ get_installed_components() {
         components+=("nginx")
     fi
     
-    # Check OpenLiteSpeed
-    if [ -d "/usr/local/lsws" ] && systemctl is-active --quiet lsws 2>/dev/null; then
-        components+=("openlitespeed")
-    fi
-    
     # Check MySQL/MariaDB
     if command_exists mysql && (systemctl is-active --quiet mysql || systemctl is-active --quiet mariadb); then
         components+=("mysql")
     fi
     
-    # Check PHP - any version
+    # Check PHP
     if command_exists php; then
         components+=("php")
-    else
-        # Also check for PHP-FPM or LSPHP installations that might not have the CLI symlink
-        for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
-            if [ -d "/etc/php/$version" ] || [ -d "/usr/local/lsws/lsphp$version" ]; then
-                components+=("php")
-                break
-            fi
-        done
     fi
     
     # Check phpMyAdmin
@@ -209,67 +190,6 @@ get_installed_components() {
     fi
     
     echo "${components[@]}"
-}
-
-# ---- Function to select web server ----
-select_web_server() {
-    print_message "Web Server Selection" "header"
-    echo -e "1) ${BOLD}Nginx${NC} (Default, widely used, easy to configure)"
-    echo -e "2) ${BOLD}OpenLiteSpeed${NC} (High performance, with built-in caching)"
-    echo ""
-    
-    read -p "$(echo -e "${BLUE}Select web server [1-2, default: 1]:${NC} ")" server_choice
-    
-    case "$server_choice" in
-        2)
-            WEB_SERVER="openlitespeed"
-            print_message "OpenLiteSpeed selected as web server." "success"
-            ;;
-        *)
-            WEB_SERVER="nginx"
-            print_message "Nginx selected as web server." "success"
-            ;;
-    esac
-}
-
-# ---- Function to select PHP version ----
-select_php_version() {
-    print_message "PHP Version Selection" "header"
-    echo -e "Available PHP versions:"
-    
-    for i in "${!AVAILABLE_PHP_VERSIONS[@]}"; do
-        local version="${AVAILABLE_PHP_VERSIONS[$i]}"
-        if [ "$version" = "$PHP_VERSION" ]; then
-            echo -e "$((i+1))) ${BOLD}PHP ${version}${NC} (Default)"
-        else
-            echo -e "$((i+1))) ${BOLD}PHP ${version}${NC}"
-        fi
-    done
-    echo ""
-    
-    local max_option=${#AVAILABLE_PHP_VERSIONS[@]}
-    read -p "$(echo -e "${BLUE}Select PHP version [1-${max_option}, default: PHP ${PHP_VERSION}]:${NC} ")" version_choice
-    
-    # Check if input is a number and in valid range
-    if [[ "$version_choice" =~ ^[0-9]+$ && "$version_choice" -ge 1 && "$version_choice" -le "$max_option" ]]; then
-        PHP_VERSION="${AVAILABLE_PHP_VERSIONS[$((version_choice-1))]}"
-    fi
-    
-    print_message "PHP ${PHP_VERSION} selected." "success"
-    
-    # Check if PHP version is compatible with chosen web server
-    if [ "$WEB_SERVER" = "openlitespeed" ]; then
-        # For OpenLiteSpeed, check if the selected PHP version is available as LSPHP
-        if ! apt-cache show "lsphp${PHP_VERSION}" &>/dev/null; then
-            print_message "PHP ${PHP_VERSION} is not available for OpenLiteSpeed. Some versions may not be in default repositories." "warning"
-            print_message "The script will try to install it anyway, but may fall back to PHP 8.0 if installation fails." "warning"
-        fi
-    else
-        # For Nginx, check if the selected PHP version is available as PHP-FPM
-        if ! apt-cache show "php${PHP_VERSION}-fpm" &>/dev/null; then
-            print_message "PHP ${PHP_VERSION} is not available in the repositories. Adding PPA for additional PHP versions." "warning"
-        fi
-    fi
 }
 
 # ---- Function to create SSL configuration files ----
@@ -340,119 +260,6 @@ install_nginx() {
     fi
     
     print_message "Nginx installed and configured successfully." "success"
-    return 0
-}
-
-# ---- Function to install OpenLiteSpeed ----
-install_openlitespeed() {
-    if [ -d "/usr/local/lsws" ] && systemctl is-active --quiet lsws 2>/dev/null; then
-        print_message "OpenLiteSpeed is already installed and running." "info"
-        return 0
-    fi
-    
-    print_message "Installing OpenLiteSpeed web server..." "header"
-    
-    # Install prerequisites
-    sudo apt-get install -y wget tar openssl libexpat1 libgeoip1 libpcre3 libxml2
-    
-    # Download and run the official OpenLiteSpeed 1-click installer
-    print_message "Downloading the official OpenLiteSpeed 1-click installer..." "info"
-    wget -O /tmp/ols_install.sh https://raw.githubusercontent.com/litespeedtech/ols1clk/master/ols1clk.sh
-    
-    if [ $? -ne 0 ]; then
-        print_message "Failed to download OpenLiteSpeed installer. Check your internet connection." "error"
-        return 1
-    fi
-    
-    # Make the installer executable
-    chmod +x /tmp/ols_install.sh
-    
-    # Convert PHP_VERSION from format like 8.2 to 82 for LSPHP
-    local LSPHP_VERSION=${PHP_VERSION/./}
-    
-    # Generate a random password
-    OLS_ADMIN_PASSWORD=$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9')
-    
-    print_message "Running OpenLiteSpeed installer with LSPHP $LSPHP_VERSION (this may take a few minutes)..." "info"
-    
-    # Run the installer with proper arguments format (no equals signs or quotes)
-    cd /tmp
-    sudo bash ols_install.sh --lsphp $LSPHP_VERSION --adminpassword $OLS_ADMIN_PASSWORD -Q
-    
-    if [ $? -ne 0 ]; then
-        print_message "Failed to install OpenLiteSpeed. Trying alternative installation method..." "warning"
-        # Try alternative installation method if the first one fails
-        cd /tmp
-        sudo bash ols_install.sh
-        
-        if [ $? -ne 0 ]; then
-            print_message "Failed to install OpenLiteSpeed with both methods." "error"
-            return 1
-        fi
-    fi
-    
-    # Verify OpenLiteSpeed was actually installed
-    if [ ! -d "/usr/local/lsws" ]; then
-        print_message "OpenLiteSpeed directory not found after installation. Installation failed." "error"
-        return 1
-    fi
-    
-    # Check if the installer generated its own password
-    if [ -f "/usr/local/lsws/password" ]; then
-        # The installer has created its own password file, let's read it
-        OLS_ADMIN_PASSWORD=$(sudo cat /usr/local/lsws/password)
-    fi
-    
-    # Save the password to our own secure file
-    echo "$OLS_ADMIN_PASSWORD" | sudo tee /root/.ols_admin_password > /dev/null
-    sudo chmod 600 /root/.ols_admin_password
-    
-    print_message "----------------------------------------" "warning"
-    print_message "IMPORTANT: OpenLiteSpeed ADMIN PASSWORD" "warning"
-    print_message "Password: $OLS_ADMIN_PASSWORD" "warning"
-    print_message "This password has been saved to /root/.ols_admin_password" "warning"
-    print_message "WebAdmin URL: https://YOUR_SERVER_IP:$OLS_ADMIN_PORT/" "warning"
-    print_message "Username: admin" "warning"
-    print_message "----------------------------------------" "warning"
-    
-    # Make sure user acknowledges the password
-    read -p "$(echo -e "${YELLOW}Have you saved this password? Type 'yes' to confirm:${NC} ")" confirm
-    if [ "$confirm" != "yes" ]; then
-        print_message "Please save the OpenLiteSpeed admin password before continuing." "error"
-        exit 1
-    fi
-    
-    # Check if OpenLiteSpeed service is active
-    if ! systemctl is-active --quiet lsws 2>/dev/null; then
-        print_message "Starting OpenLiteSpeed service..." "info"
-        sudo systemctl enable lsws
-        sudo systemctl start lsws
-    fi
-    
-    # Configure OpenLiteSpeed to work with WordPress
-    print_message "Configuring OpenLiteSpeed for WordPress..." "info"
-    
-    # Create OpenLiteSpeed directories for virtual hosts if they don't exist
-    if [ ! -d "$OLS_VHOSTS_DIR" ]; then
-        sudo mkdir -p "$OLS_VHOSTS_DIR"
-    fi
-    
-    # Configure firewall if ufw is installed
-    if command_exists ufw; then
-        sudo ufw allow 80/tcp
-        sudo ufw allow 443/tcp
-        sudo ufw allow "$OLS_ADMIN_PORT"/tcp
-    fi
-    
-    # Install LSCache for WordPress
-    print_message "Installing LiteSpeed Cache for WordPress..." "info"
-    mkdir -p /tmp/lscache-wp
-    wget -O /tmp/lscache-wp/litespeed-cache.zip https://downloads.wordpress.org/plugin/litespeed-cache.zip
-    
-    print_message "OpenLiteSpeed installed and configured successfully." "success"
-    print_message "WebAdmin URL: https://YOUR_SERVER_IP:$OLS_ADMIN_PORT/" "info"
-    print_message "Username: admin" "info"
-    print_message "Password: $OLS_ADMIN_PASSWORD" "info"
     return 0
 }
 
@@ -594,93 +401,13 @@ install_mysql() {
 
 # ---- Function to install PHP ----
 install_php() {
-    local php_version_installed=false
-    
-    # Special case for OpenLiteSpeed - check if LSPHP is already installed
-    if [ "$WEB_SERVER" = "openlitespeed" ] && [ -d "/usr/local/lsws" ]; then
-        # Convert PHP_VERSION from format like 8.2 to 82 for LSPHP directory check
-        local LSPHP_DIR_VERSION=${PHP_VERSION/./}
-        
-        # Check both possible directory structures for LSPHP
-        if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ] || [ -d "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION" ]; then
-            print_message "LSPHP for PHP $PHP_VERSION was already installed with OpenLiteSpeed." "success"
-            
-            # Create symlink for PHP CLI if not exists
-            if [ ! -f "/usr/bin/php" ]; then
-                if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ] && [ -f "/usr/local/lsws/lsphp$PHP_VERSION/bin/php" ]; then
-                    sudo ln -sf "/usr/local/lsws/lsphp$PHP_VERSION/bin/php" /usr/bin/php
-                elif [ -d "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION" ] && [ -f "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION/bin/php" ]; then
-                    sudo ln -sf "/usr/local/lsws/lsphp$LSPHP_DIR_VERSION/bin/php" /usr/bin/php
-                else
-                    # Try to find PHP binary in any LSPHP directory
-                    local php_bin=$(find /usr/local/lsws -name php -type f -executable | grep bin/php | head -1)
-                    if [ -n "$php_bin" ]; then
-                        sudo ln -sf "$php_bin" /usr/bin/php
-                    fi
-                fi
-                print_message "PHP command line symlink created." "info"
-            fi
-            
-            # Provide information about installed PHP version
-            if command_exists php; then
-                local installed_version=$(php -v | head -n 1)
-                print_message "Active PHP version: $installed_version" "info"
-            fi
-            
-            return 0
-        fi
-    fi
-    
-    # Continue with normal PHP installation logic...
-    # Check if any PHP version is already installed
     if command_exists php; then
         local current_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
-        
-        # If the installed version matches the requested version
-        if [ "$current_version" = "$PHP_VERSION" ]; then
-            print_message "PHP $current_version is already installed." "info"
-            return 0
-        else
-            print_message "PHP $current_version is installed, but PHP $PHP_VERSION was requested." "warning"
-            read -p "$(echo -e "${YELLOW}Do you want to install PHP $PHP_VERSION alongside the existing version? (y/n):${NC} ")" install_another
-            
-            if [ "$install_another" != "y" ]; then
-                print_message "Using existing PHP $current_version installation." "info"
-                PHP_VERSION=$current_version
-                return 0
-            fi
-            
-            php_version_installed=true
-        fi
+        print_message "PHP $current_version is already installed." "info"
+        return 0
     fi
     
     print_message "Installing PHP $PHP_VERSION and required extensions..." "header"
-    
-    # For OpenLiteSpeed, if LSPHP is already installed, we can skip additional PHP installation
-    if [ "$WEB_SERVER" = "openlitespeed" ]; then
-        if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ] || [ -d "/usr/local/lsws/lsphp${PHP_VERSION/./}" ]; then
-            print_message "LSPHP $PHP_VERSION was already installed with OpenLiteSpeed." "success"
-            
-            # Create symlink for PHP CLI if not exists
-            if [ ! -f "/usr/bin/php" ] || [ "$php_version_installed" = true ]; then
-                # Try both directory formats (with/without dot in version)
-                if [ -d "/usr/local/lsws/lsphp$PHP_VERSION" ]; then
-                    sudo ln -sf /usr/local/lsws/lsphp$PHP_VERSION/bin/php /usr/bin/php
-                elif [ -d "/usr/local/lsws/lsphp${PHP_VERSION/./}" ]; then
-                    sudo ln -sf /usr/local/lsws/lsphp${PHP_VERSION/./}/bin/php /usr/bin/php
-                fi
-                print_message "PHP command line symlink created." "info"
-            fi
-            
-            # Provide information about installed PHP version
-            if command_exists php; then
-                local installed_version=$(php -v | head -n 1)
-                print_message "Active PHP version: $installed_version" "info"
-            fi
-            
-            return 0
-        fi
-    fi
     
     # Add PPA for PHP (for Ubuntu)
     if command_exists add-apt-repository; then
@@ -689,98 +416,25 @@ install_php() {
     fi
     
     # Install PHP and required extensions
-    if [ "$WEB_SERVER" = "openlitespeed" ]; then
-        # For OpenLiteSpeed, we need to install LSPHP
-        print_message "Installing LSPHP $PHP_VERSION for OpenLiteSpeed..." "info"
-        
-        # First, check if the OLS repository is properly set up for LSPHP
-        if ! apt-cache search "lsphp$PHP_VERSION" &>/dev/null; then
-            print_message "Setting up LiteSpeed repository for LSPHP..." "info"
-            wget -O - https://rpms.litespeedtech.com/debian/enable_lst_debian_repo.sh | sudo bash
-            sudo apt-get update
-        fi
-        
-        # Try to install LSPHP with all required extensions
-        if ! sudo apt-get install -y lsphp$PHP_VERSION lsphp$PHP_VERSION-common lsphp$PHP_VERSION-mysql \
-            lsphp$PHP_VERSION-curl lsphp$PHP_VERSION-gd lsphp$PHP_VERSION-intl lsphp$PHP_VERSION-imap \
-            lsphp$PHP_VERSION-mbstring lsphp$PHP_VERSION-opcache lsphp$PHP_VERSION-pdo lsphp$PHP_VERSION-soap \
-            lsphp$PHP_VERSION-xml lsphp$PHP_VERSION-zip; then
-            
-            print_message "Failed to install LSPHP $PHP_VERSION. Falling back to LSPHP 8.0..." "warning"
-            PHP_VERSION="8.0"
-            
-            # Try again with PHP 8.0
-            sudo apt-get install -y lsphp$PHP_VERSION lsphp$PHP_VERSION-common lsphp$PHP_VERSION-mysql \
-                lsphp$PHP_VERSION-curl lsphp$PHP_VERSION-gd lsphp$PHP_VERSION-intl lsphp$PHP_VERSION-imap \
-                lsphp$PHP_VERSION-mbstring lsphp$PHP_VERSION-opcache lsphp$PHP_VERSION-pdo lsphp$PHP_VERSION-soap \
-                lsphp$PHP_VERSION-xml lsphp$PHP_VERSION-zip
-        fi
-        
-        # Create symlink for PHP CLI
-        if [ ! -f "/usr/bin/php" ] || [ "$php_version_installed" = true ]; then
-            sudo ln -sf /usr/local/lsws/lsphp$PHP_VERSION/bin/php /usr/bin/php
-        fi
-        
-        # Configure PHP
-        if [ -f "/usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini" ]; then
-            sudo cp /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini.bak
-            sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-            sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-            sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-            sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /usr/local/lsws/lsphp$PHP_VERSION/etc/php/$PHP_VERSION/litespeed/php.ini
-        else
-            print_message "PHP INI file not found at expected location. PHP settings will use defaults." "warning"
-        fi
-        
-        # Restart OpenLiteSpeed
-        sudo systemctl restart lsws
-        
-    else
-        # For Nginx, we use PHP-FPM
-        print_message "Installing PHP-FPM $PHP_VERSION for Nginx..." "info"
-        
-        # Try to install PHP-FPM with all required extensions
-        if ! sudo apt-get install -y php$PHP_VERSION php$PHP_VERSION-fpm php$PHP_VERSION-mysql \
-            php$PHP_VERSION-curl php$PHP_VERSION-gd php$PHP_VERSION-mbstring php$PHP_VERSION-xml \
-            php$PHP_VERSION-xmlrpc php$PHP_VERSION-zip php$PHP_VERSION-intl php$PHP_VERSION-soap; then
-            
-            print_message "Failed to install PHP-FPM $PHP_VERSION. Falling back to PHP 8.0..." "warning"
-            PHP_VERSION="8.0"
-            
-            # Try again with PHP 8.0
-            sudo apt-get install -y php$PHP_VERSION php$PHP_VERSION-fpm php$PHP_VERSION-mysql \
-                php$PHP_VERSION-curl php$PHP_VERSION-gd php$PHP_VERSION-mbstring php$PHP_VERSION-xml \
-                php$PHP_VERSION-xmlrpc php$PHP_VERSION-zip php$PHP_VERSION-intl php$PHP_VERSION-soap
-        fi
-        
-        # Configure PHP
-        if [ -f "/etc/php/$PHP_VERSION/fpm/php.ini" ]; then
-            sudo cp /etc/php/$PHP_VERSION/fpm/php.ini /etc/php/$PHP_VERSION/fpm/php.ini.bak
-            sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
-            sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
-            sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /etc/php/$PHP_VERSION/fpm/php.ini
-            sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /etc/php/$PHP_VERSION/fpm/php.ini
-        else
-            print_message "PHP INI file not found at expected location. PHP settings will use defaults." "warning"
-        fi
-        
-        # Restart PHP-FPM
-        sudo systemctl restart php$PHP_VERSION-fpm
-    fi
+    sudo apt-get install -y php$PHP_VERSION php$PHP_VERSION-fpm php$PHP_VERSION-mysql \
+    php$PHP_VERSION-curl php$PHP_VERSION-gd php$PHP_VERSION-mbstring php$PHP_VERSION-xml \
+    php$PHP_VERSION-xmlrpc php$PHP_VERSION-zip php$PHP_VERSION-intl php$PHP_VERSION-soap
     
     if [ $? -ne 0 ]; then
-        print_message "There were some issues during PHP installation." "warning"
-        print_message "Please check error messages above and consider manually installing any missing extensions." "info"
-    else
-        print_message "PHP $PHP_VERSION installed and configured successfully." "success"
+        print_message "Failed to install PHP and extensions." "error"
+        return 1
     fi
     
-    # Provide information about installed PHP version
-    if command_exists php; then
-        local installed_version=$(php -v | head -n 1)
-        print_message "Installed PHP version: $installed_version" "info"
-    fi
+    # Configure PHP
+    sudo sed -i 's/upload_max_filesize = 2M/upload_max_filesize = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
+    sudo sed -i 's/post_max_size = 8M/post_max_size = 64M/' /etc/php/$PHP_VERSION/fpm/php.ini
+    sudo sed -i 's/memory_limit = 128M/memory_limit = 256M/' /etc/php/$PHP_VERSION/fpm/php.ini
+    sudo sed -i 's/max_execution_time = 30/max_execution_time = 300/' /etc/php/$PHP_VERSION/fpm/php.ini
     
+    # Restart PHP-FPM
+    sudo systemctl restart php$PHP_VERSION-fpm
+    
+    print_message "PHP $PHP_VERSION installed and configured successfully." "success"
     return 0
 }
 
@@ -798,13 +452,7 @@ install_phpmyadmin() {
     echo "phpmyadmin phpmyadmin/app-password-confirm password $MYSQL_ROOT_PASSWORD" | sudo debconf-set-selections
     echo "phpmyadmin phpmyadmin/mysql/admin-pass password $MYSQL_ROOT_PASSWORD" | sudo debconf-set-selections
     echo "phpmyadmin phpmyadmin/mysql/app-pass password $MYSQL_ROOT_PASSWORD" | sudo debconf-set-selections
-    
-    # For Nginx, we need to set the reconfigure-webserver
-    if [ "$WEB_SERVER" = "nginx" ]; then
-        echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect nginx" | sudo debconf-set-selections
-    else
-        echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | sudo debconf-set-selections
-    fi
+    echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect nginx" | sudo debconf-set-selections
     
     # Install phpMyAdmin
     sudo apt-get install -y phpmyadmin
@@ -814,11 +462,9 @@ install_phpmyadmin() {
         return 1
     fi
     
-    # Configure web server for phpMyAdmin
-    if [ "$WEB_SERVER" = "nginx" ]; then
-        # Create Nginx configuration for phpMyAdmin
-        if [ ! -f "$NGINX_AVAILABLE/phpmyadmin.conf" ]; then
-            cat > /tmp/phpmyadmin.conf << EOL
+    # Create Nginx configuration for phpMyAdmin
+    if [ ! -f "$NGINX_AVAILABLE/phpmyadmin.conf" ]; then
+        cat > /tmp/phpmyadmin.conf << EOL
 server {
     listen 80;
     server_name pma.${DOMAIN_NAME};
@@ -841,89 +487,12 @@ server {
     }
 }
 EOL
-            sudo mv /tmp/phpmyadmin.conf "$NGINX_AVAILABLE/phpmyadmin.conf"
-            sudo ln -s "$NGINX_AVAILABLE/phpmyadmin.conf" "$NGINX_ENABLED/phpmyadmin.conf"
-            sudo systemctl restart nginx
-        fi
-    elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-        # Create an OpenLiteSpeed virtual host for phpMyAdmin
-        # First, create the virtual host config directory
-        sudo mkdir -p "$OLS_VHOSTS_DIR/phpmyadmin"
-        
-        # Create the virtual host configuration
-        cat > /tmp/phpmyadmin_vhost.conf << EOL
-docRoot                   /usr/share/phpmyadmin
-vhDomain                  pma.${DOMAIN_NAME}
-adminEmails               admin@${DOMAIN_NAME}
-enableGzip                1
-enableIpGeo               0
-
-rewrite  {
-  enable                  1
-  autoLoadHtaccess        1
-}
-
-context / {
-  location                /usr/share/phpmyadmin
-  allowBrowse             1
-  
-  rewrite  {
-    enable                0
-  }
-  
-  addDefaultCharset       off
-  
-  phpIniOverride  {
-    php_admin_value upload_max_filesize 64M
-    php_admin_value post_max_size 64M
-    php_admin_value memory_limit 256M
-    php_admin_value max_execution_time 300
-  }
-}
-
-context /.well-known/ {
-  location                ${VH_ROOT}/.well-known/
-  allowBrowse             1
-}
-
-context /phpmyadmin {
-  location                /usr/share/phpmyadmin
-  allowBrowse             1
-  
-  phpIniOverride  {
-    php_admin_value upload_max_filesize 64M
-    php_admin_value post_max_size 64M
-    php_admin_value memory_limit 256M
-    php_admin_value max_execution_time 300
-  }
-}
-
-EOL
-        sudo mv /tmp/phpmyadmin_vhost.conf "$OLS_VHOSTS_DIR/phpmyadmin/vhconf.conf"
-        
-        # Add the virtual host to the main configuration
-        # Create temporary file with new listener
-        if ! grep -q "map pma.${DOMAIN_NAME}" "$OLS_CONF_DIR/httpd_config.conf"; then
-            # Add mapping to listeners
-            sudo sed -i "/listener HTTP/a \  map pma.${DOMAIN_NAME} phpmyadmin" "$OLS_CONF_DIR/httpd_config.conf"
-            
-            # Add virtual host entry if it doesn't exist
-            if ! grep -q "virtualHost phpmyadmin" "$OLS_CONF_DIR/httpd_config.conf"; then
-                echo "
-virtualHost phpmyadmin {
-  vhRoot                  /usr/share/phpmyadmin
-  configFile              $OLS_VHOSTS_DIR/phpmyadmin/vhconf.conf
-  allowSymbolLink         1
-  enableScript            1
-  restrained              1
-  setUIDMode              0
-}" | sudo tee -a "$OLS_CONF_DIR/httpd_config.conf" > /dev/null
-            fi
-            
-            # Restart OpenLiteSpeed
-            sudo systemctl restart lsws
-        fi
+        sudo mv /tmp/phpmyadmin.conf "$NGINX_AVAILABLE/phpmyadmin.conf"
+        sudo ln -s "$NGINX_AVAILABLE/phpmyadmin.conf" "$NGINX_ENABLED/phpmyadmin.conf"
     fi
+    
+    # Restart Nginx
+    sudo systemctl restart nginx
     
     print_message "phpMyAdmin installed successfully." "success"
     print_message "You can access phpMyAdmin at http://pma.${DOMAIN_NAME} once DNS is configured." "info"
@@ -939,12 +508,8 @@ install_certbot() {
     
     print_message "Installing Certbot for SSL certificates..." "header"
     
-    # Install certbot and plugins based on web server
-    if [ "$WEB_SERVER" = "nginx" ]; then
-        sudo apt-get install -y certbot python3-certbot-nginx
-    elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-        sudo apt-get install -y certbot
-    fi
+    # Install certbot and Nginx plugin
+    sudo apt-get install -y certbot python3-certbot-nginx
     
     if [ $? -ne 0 ]; then
         print_message "Failed to install Certbot." "error"
@@ -1060,10 +625,8 @@ EOL
     sudo chown www-data:www-data "$site_path/wp-config.php"
     sudo chmod 640 "$site_path/wp-config.php"
     
-    # Create web server configuration based on selected web server
-    if [ "$WEB_SERVER" = "nginx" ]; then
-        # Create Nginx site configuration
-        cat > /tmp/wordpress.conf << EOL
+    # Create Nginx site configuration
+    cat > /tmp/wordpress.conf << EOL
 server {
     listen 80;
     server_name $site_domain;
@@ -1101,128 +664,12 @@ server {
     }
 }
 EOL
-        sudo mv /tmp/wordpress.conf "$NGINX_AVAILABLE/$site_domain.conf"
-        sudo ln -sf "$NGINX_AVAILABLE/$site_domain.conf" "$NGINX_ENABLED/$site_domain.conf"
-        
-        # Restart Nginx
-        sudo systemctl restart nginx
-        
-    elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-        # Create OpenLiteSpeed virtual host directory and configuration
-        sudo mkdir -p "$OLS_VHOSTS_DIR/$site_domain"
-        
-        # Create the virtual host configuration
-        cat > /tmp/wordpress_vhost.conf << EOL
-docRoot                   $site_path
-vhDomain                  $site_domain
-adminEmails               admin@$site_domain
-enableGzip                1
-enableIpGeo               0
-
-index  {
-  useServer               0
-  indexFiles              index.php, index.html
-}
-
-scripthandler  {
-  add                     lsapi:lsphp$PHP_VERSION php
-}
-
-extprocessor lsphp$PHP_VERSION {
-  type                    lsapi
-  address                 UDS://tmp/lshttpd/lsphp$PHP_VERSION.sock
-  maxConns                35
-  env                     PHP_LSAPI_CHILDREN=35
-  initTimeout             60
-  retryTimeout            0
-  persistConn             1
-  respBuffer              0
-  autoStart               1
-  path                    /usr/local/lsws/lsphp$PHP_VERSION/bin/lsphp
-  extUser                 www-data
-  extGroup                www-data
-  memSoftLimit            2047M
-  memHardLimit            2047M
-  procSoftLimit           400
-  procHardLimit           500
-}
-
-phpIniOverride  {
-  php_admin_value upload_max_filesize 64M
-  php_admin_value post_max_size 64M
-  php_admin_value memory_limit 256M
-  php_admin_value max_execution_time 300
-}
-
-rewrite  {
-  enable                  1
-  autoLoadHtaccess        1
-  rules                   <<<END_RULES
-RewriteEngine On
-RewriteBase /
-RewriteRule ^index\.php$ - [L]
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . /index.php [L]
-  END_RULES
-}
-
-context / {
-  location                $site_path
-  allowBrowse             1
-  
-  rewrite  {
-    enable                0
-  }
-}
-
-context /.well-known/ {
-  location                ${VH_ROOT}/.well-known/
-  allowBrowse             1
-}
-
-context /wp-admin/ {
-  location                $site_path/wp-admin/
-  allowBrowse             1
-  
-  phpIniOverride  {
-    php_admin_value upload_max_filesize 128M
-    php_admin_value post_max_size 128M
-    php_admin_value memory_limit 256M
-    php_admin_value max_execution_time 600
-  }
-}
-EOL
-        sudo mv /tmp/wordpress_vhost.conf "$OLS_VHOSTS_DIR/$site_domain/vhconf.conf"
-        
-        # Add the virtual host to the main configuration
-        if ! grep -q "map $site_domain" "$OLS_CONF_DIR/httpd_config.conf"; then
-            # Add mapping to listeners
-            sudo sed -i "/listener HTTP/a \  map $site_domain $site_domain" "$OLS_CONF_DIR/httpd_config.conf"
-            
-            # Add virtual host entry
-            echo "
-virtualHost $site_domain {
-  vhRoot                  $site_path
-  configFile              $OLS_VHOSTS_DIR/$site_domain/vhconf.conf
-  allowSymbolLink         1
-  enableScript            1
-  restrained              1
-  setUIDMode              0
-}" | sudo tee -a "$OLS_CONF_DIR/httpd_config.conf" > /dev/null
-            
-            # Restart OpenLiteSpeed
-            sudo systemctl restart lsws
-        fi
-        
-        # Install LiteSpeed Cache for WordPress if available
-        if [ -f "/tmp/lscache-wp/litespeed-cache.zip" ]; then
-            sudo mkdir -p "$site_path/wp-content/plugins"
-            sudo unzip -q -o /tmp/lscache-wp/litespeed-cache.zip -d "$site_path/wp-content/plugins/"
-            sudo chown -R www-data:www-data "$site_path/wp-content"
-            print_message "LiteSpeed Cache for WordPress installed." "success"
-        fi
-    fi
+    
+    sudo mv /tmp/wordpress.conf "$NGINX_AVAILABLE/$site_domain.conf"
+    sudo ln -sf "$NGINX_AVAILABLE/$site_domain.conf" "$NGINX_ENABLED/$site_domain.conf"
+    
+    # Restart Nginx
+    sudo systemctl restart nginx
     
     if [ "$installation_success" = true ]; then
         print_message "WordPress installed successfully at $site_path" "success"
@@ -1267,51 +714,6 @@ configure_ssl() {
         return 1
     fi
     
-    # Find the document root based on web server
-    local site_path=""
-    
-    if [ "$WEB_SERVER" = "nginx" ]; then
-        # For Nginx, find the document root from the config
-        for conf in "$NGINX_AVAILABLE"/*.conf; do
-            if [ -f "$conf" ] && grep -q "server_name.*$domain" "$conf"; then
-                site_path=$(grep "root" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
-                break
-            fi
-        done
-    elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-        # For OpenLiteSpeed, find the document root from virtual host config
-        if [ -d "$OLS_VHOSTS_DIR/$domain" ] && [ -f "$OLS_VHOSTS_DIR/$domain/vhconf.conf" ]; then
-            site_path=$(grep "docRoot" "$OLS_VHOSTS_DIR/$domain/vhconf.conf" | head -1 | awk '{print $2}')
-        fi
-    fi
-    
-    if [ -z "$site_path" ]; then
-        print_message "Could not determine the document root for $domain. Please make sure the site is properly configured." "error"
-        return 1
-    fi
-    
-    print_message "Found document root: $site_path" "info"
-    
-    # Ensure the .well-known/acme-challenge directory exists and has proper permissions
-    sudo mkdir -p "$site_path/.well-known/acme-challenge"
-    sudo chown -R www-data:www-data "$site_path/.well-known"
-    sudo chmod -R 755 "$site_path/.well-known"
-    
-    # Create a test file to verify the directory is accessible
-    echo "certbot-test" | sudo tee "$site_path/.well-known/acme-challenge/test.txt" > /dev/null
-    print_message "Created test file at $site_path/.well-known/acme-challenge/test.txt" "info"
-    print_message "Please verify this file is accessible at http://$domain/.well-known/acme-challenge/test.txt" "warning"
-    read -p "$(echo -e "${YELLOW}Is the test file accessible? (y/n):${NC} ")" test_accessible
-    
-    if [ "$test_accessible" != "y" ]; then
-        print_message "The test file is not accessible. Please check your web server configuration." "error"
-        print_message "For OpenLiteSpeed, make sure the configuration includes a context for /.well-known/" "info"
-        return 1
-    fi
-    
-    # Remove the test file
-    sudo rm -f "$site_path/.well-known/acme-challenge/test.txt"
-    
     if [ "$cert_type" = "wildcard" ]; then
         print_message "Requesting wildcard certificate for *.$domain" "info"
         print_message "NOTE: Wildcard certificates require DNS validation." "warning"
@@ -1329,19 +731,18 @@ configure_ssl() {
         # Create SSL configuration files if they don't exist
         create_ssl_config_files
         
-        # Configure web server to use the certificate
-        if [ "$WEB_SERVER" = "nginx" ]; then
-            print_message "Configuring Nginx to use the wildcard certificate..." "info"
-            for conf in "$NGINX_AVAILABLE"/*.conf; do
-                if [ -f "$conf" ] && grep -q "server_name.*$domain" "$conf"; then
-                    # Create a backup of the original file
-                    sudo cp "$conf" "${conf}.bak"
-                    
-                    # Extract site path from the configuration file
-                    local site_path=$(grep "root" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
-                    
-                    # Replace the entire server block with our ssl-enabled version
-                    cat > /tmp/ssl-server-block.conf << EOL
+        # Configure Nginx to use the certificate
+        print_message "Configuring Nginx to use the wildcard certificate..." "info"
+        for conf in "$NGINX_AVAILABLE"/*.conf; do
+            if grep -q "server_name.*$domain" "$conf"; then
+                # Create a backup of the original file
+                sudo cp "$conf" "${conf}.bak"
+                
+                # Extract site path from the configuration file
+                local site_path=$(grep "root" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
+                
+                # Replace the entire server block with our ssl-enabled version
+                cat > /tmp/ssl-server-block.conf << EOL
 server {
     listen 80;
     server_name $domain www.$domain *.$domain;
@@ -1406,249 +807,20 @@ server {
     }
 }
 EOL
-                    sudo mv /tmp/ssl-server-block.conf "$conf"
-                    print_message "Updated configuration for $conf" "success"
-                fi
-            done
-            
-            # Restart Nginx
-            sudo systemctl restart nginx
-            
-        elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-            print_message "Configuring OpenLiteSpeed to use the wildcard certificate..." "info"
-            
-            # Add SSL configuration to the virtual host
-            if [ -f "$OLS_VHOSTS_DIR/$domain/vhconf.conf" ]; then
-                # Check if SSL configuration already exists
-                if ! grep -q "vhssl" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
-                    # Add SSL configuration
-                    cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
-
-vhssl  {
-  keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
-  certFile                /etc/letsencrypt/live/$domain/fullchain.pem
-  certChain               1
-  sslProtocol             30
-  enableECDHE             1
-  enableDHE               1
-  ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
-  enableSpdy              15
-  ocspStapling            1
-}
-EOL
-                    print_message "Added SSL configuration to virtual host" "success"
-                fi
-                
-                # Add HTTP to HTTPS redirection if not already there
-                if ! grep -q "RewriteCond %{HTTPS} off" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
-                    # Update rewrite rules to include HTTP to HTTPS redirection
-                    if grep -q "rewrite.*{" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
-                        # Add to existing rewrite rules
-                        sudo sed -i '/rewrite.*{/,/}/c\
-rewrite  {\
-  enable                  1\
-  autoLoadHtaccess        1\
-  rules                   <<<EOT\
-RewriteEngine On\
-RewriteCond %{HTTPS} off\
-RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\
-RewriteBase /\
-RewriteRule ^index\.php$ - [L]\
-RewriteCond %{REQUEST_FILENAME} !-f\
-RewriteCond %{REQUEST_FILENAME} !-d\
-RewriteRule . /index.php [L]\
-  EOT\
-}' "$OLS_VHOSTS_DIR/$domain/vhconf.conf"
-                    else
-                        # Add new rewrite section
-                        cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
-
-rewrite  {
-  enable                  1
-  autoLoadHtaccess        1
-  rules                   <<<EOT
-RewriteEngine On
-RewriteCond %{HTTPS} off
-RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
-RewriteBase /
-RewriteRule ^index\.php$ - [L]
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . /index.php [L]
-  EOT
-}
-EOL
-                    fi
-                    print_message "Added HTTP to HTTPS redirection" "success"
-                fi
+                sudo mv /tmp/ssl-server-block.conf "$conf"
+                print_message "Updated configuration for $conf" "success"
             fi
-            
-            # Configure HTTPS listener if it doesn't exist
-            if ! grep -q "listener HTTPS" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
-                # Add HTTPS listener
-                cat > /tmp/https_listener.conf << EOL
-
-listener HTTPS {
-  address                 *:443
-  secure                  1
-  keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
-  certFile                /etc/letsencrypt/live/$domain/fullchain.pem
-  certChain               1
-  sslProtocol             30
-  enableECDHE             1
-  enableDHE               1
-  ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
-  enableSpdy              15
-  ocspStapling            1
-  map                     $domain $domain
-  map                     *.$domain $domain
-}
-EOL
-                sudo bash -c "cat /tmp/https_listener.conf >> $OLS_CONF_DIR/httpd_config.conf"
-                print_message "Added HTTPS listener for OpenLiteSpeed" "success"
-            else
-                # Add domain mapping to existing HTTPS listener if not already there
-                if ! grep -q "map.*$domain" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
-                    sudo sed -i "/listener HTTPS/,/}/s/}/  map                     $domain $domain\n  map                     *.$domain $domain\n}/" "$OLS_CONF_DIR/httpd_config.conf"
-                    print_message "Added domain mapping to HTTPS listener" "success"
-                fi
-            fi
-            
-            # Restart OpenLiteSpeed
-            sudo systemctl restart lsws
-        fi
+        done
+        
+        # Restart Nginx
+        sudo systemctl restart nginx
     else
-        # Standard certificate
-        if [ "$WEB_SERVER" = "nginx" ]; then
-            # Use Nginx plugin
-            sudo certbot --nginx -d "$domain" --non-interactive --agree-tos --email "admin@$domain"
-            
-            if [ $? -ne 0 ]; then
-                print_message "Failed to obtain SSL certificate. Check your domain configuration." "error"
-                return 1
-            fi
-        elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-            # Use webroot plugin
-            print_message "Using webroot method for OpenLiteSpeed SSL..." "info"
-            
-            # Run certbot with webroot plugin
-            sudo certbot certonly --webroot --webroot-path="$site_path" -d "$domain" --agree-tos --email "admin@$domain" --non-interactive
-            
-            if [ $? -ne 0 ]; then
-                print_message "Failed to obtain SSL certificate. Check your domain configuration." "error"
-                print_message "Trying to troubleshoot the issue..." "info"
-                
-                # Create a very permissive .well-known directory that certbot can write to
-                sudo mkdir -p "$site_path/.well-known/acme-challenge"
-                sudo chmod -R 777 "$site_path/.well-known"
-                
-                # Try again with verbose output
-                sudo certbot certonly --webroot --webroot-path="$site_path" -d "$domain" --agree-tos --email "admin@$domain" -v
-                
-                if [ $? -ne 0 ]; then
-                    print_message "SSL certification still failed. Please check your DNS and web server configuration." "error"
-                    return 1
-                fi
-            fi
-            
-            # Add SSL configuration to OpenLiteSpeed
-            if [ -f "$OLS_VHOSTS_DIR/$domain/vhconf.conf" ]; then
-                # Check if SSL configuration already exists
-                if ! grep -q "vhssl" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
-                    # Add SSL configuration
-                    cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
-
-vhssl  {
-  keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
-  certFile                /etc/letsencrypt/live/$domain/fullchain.pem
-  certChain               1
-  sslProtocol             30
-  enableECDHE             1
-  enableDHE               1
-  ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
-  enableSpdy              15
-  ocspStapling            1
-}
-EOL
-                    print_message "Added SSL configuration to virtual host" "success"
-                fi
-                
-                # Add HTTP to HTTPS redirection if not already there
-                if ! grep -q "RewriteCond %{HTTPS} off" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
-                    # Update rewrite rules to include HTTP to HTTPS redirection
-                    if grep -q "rewrite.*{" "$OLS_VHOSTS_DIR/$domain/vhconf.conf"; then
-                        # Add to existing rewrite rules
-                        sudo sed -i '/rewrite.*{/,/}/c\
-rewrite  {\
-  enable                  1\
-  autoLoadHtaccess        1\
-  rules                   <<<EOT\
-RewriteEngine On\
-RewriteCond %{HTTPS} off\
-RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]\
-RewriteBase /\
-RewriteRule ^index\.php$ - [L]\
-RewriteCond %{REQUEST_FILENAME} !-f\
-RewriteCond %{REQUEST_FILENAME} !-d\
-RewriteRule . /index.php [L]\
-  EOT\
-}' "$OLS_VHOSTS_DIR/$domain/vhconf.conf"
-                    else
-                        # Add new rewrite section
-                        cat >> "$OLS_VHOSTS_DIR/$domain/vhconf.conf" << EOL
-
-rewrite  {
-  enable                  1
-  autoLoadHtaccess        1
-  rules                   <<<EOT
-RewriteEngine On
-RewriteCond %{HTTPS} off
-RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
-RewriteBase /
-RewriteRule ^index\.php$ - [L]
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule . /index.php [L]
-  EOT
-}
-EOL
-                    fi
-                    print_message "Added HTTP to HTTPS redirection" "success"
-                fi
-            fi
-            
-            # Configure HTTPS listener if it doesn't exist
-            if ! grep -q "listener HTTPS" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
-                # Add HTTPS listener
-                cat > /tmp/https_listener.conf << EOL
-
-listener HTTPS {
-  address                 *:443
-  secure                  1
-  keyFile                 /etc/letsencrypt/live/$domain/privkey.pem
-  certFile                /etc/letsencrypt/live/$domain/fullchain.pem
-  certChain               1
-  sslProtocol             30
-  enableECDHE             1
-  enableDHE               1
-  ciphers                 EECDH+AESGCM:EDH+AESGCM:AES256+EECDH:AES256+EDH
-  enableSpdy              15
-  ocspStapling            1
-  map                     $domain $domain
-}
-EOL
-                sudo bash -c "cat /tmp/https_listener.conf >> $OLS_CONF_DIR/httpd_config.conf"
-                print_message "Added HTTPS listener for OpenLiteSpeed" "success"
-            else
-                # Add domain mapping to existing HTTPS listener if not already there
-                if ! grep -q "map.*$domain.*$domain" "$OLS_CONF_DIR/httpd_config.conf" 2>/dev/null; then
-                    sudo sed -i "/listener HTTPS/,/}/s/}/  map                     $domain $domain\n}/" "$OLS_CONF_DIR/httpd_config.conf"
-                    print_message "Added domain mapping to HTTPS listener" "success"
-                fi
-            fi
-            
-            # Restart OpenLiteSpeed
-            sudo systemctl restart lsws
+        # Standard certificate with Nginx plugin
+        sudo certbot --nginx -d "$domain" --non-interactive --agree-tos --email "admin@$domain"
+        
+        if [ $? -ne 0 ]; then
+            print_message "Failed to obtain SSL certificate. Check your domain configuration." "error"
+            return 1
         fi
     fi
     
@@ -1716,7 +888,7 @@ show_banner() {
     echo "║                                                          ║"
     echo "║       WordPress Complete Stack Installer v$SCRIPT_VERSION       ║"
     echo "║                                                          ║"
-    echo "║   WordPress + MySQL + phpMyAdmin + Web Server + PHP + SSL    ║"
+    echo "║   WordPress + MySQL + phpMyAdmin + Nginx + PHP + SSL    ║"
     echo "║                                                          ║"
     echo "╚══════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -1734,15 +906,11 @@ show_menu() {
     
     print_message "System Status" "header"
     
-    # Check Web Server
+    # Check Nginx
     if [[ " ${installed_components[@]} " =~ " nginx " ]]; then
-        echo -e "- Web Server: ${GREEN}Nginx Installed${NC}"
-        WEB_SERVER="nginx"
-    elif [[ " ${installed_components[@]} " =~ " openlitespeed " ]]; then
-        echo -e "- Web Server: ${GREEN}OpenLiteSpeed Installed${NC}"
-        WEB_SERVER="openlitespeed"
+        echo -e "- Nginx Web Server: ${GREEN}Installed${NC}"
     else
-        echo -e "- Web Server: ${RED}Not Installed${NC}"
+        echo -e "- Nginx Web Server: ${RED}Not Installed${NC}"
     fi
     
     # Check MySQL
@@ -1752,26 +920,10 @@ show_menu() {
         echo -e "- MySQL Database: ${RED}Not Installed${NC}"
     fi
     
-    # Check PHP - Now show all installed PHP versions
+    # Check PHP
     if [[ " ${installed_components[@]} " =~ " php " ]]; then
-        # Get all installed PHP versions
-        local php_versions=""
-        for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
-            if command_exists "php$version" || [ -d "/etc/php/$version" ] || [ -d "/usr/local/lsws/lsphp$version" ]; then
-                if [ -z "$php_versions" ]; then
-                    php_versions="$version"
-                else
-                    php_versions="$php_versions, $version"
-                fi
-            fi
-        done
-        
-        # Get active PHP version
-        local active_php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
-        echo -e "- PHP: ${GREEN}Installed (Active: v$active_php_version, Available: $php_versions)${NC}"
-        
-        # Set the active PHP version as the current PHP_VERSION
-        PHP_VERSION=$active_php_version
+        local php_version=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
+        echo -e "- PHP: ${GREEN}Installed (v$php_version)${NC}"
     else
         echo -e "- PHP: ${RED}Not Installed${NC}"
     fi
@@ -1808,7 +960,7 @@ show_menu() {
         echo -e "1) ${BOLD}Reinstall/Update Stack Components${NC}"
     fi
     
-    if ([[ " ${installed_components[@]} " =~ " nginx " ]] || [[ " ${installed_components[@]} " =~ " openlitespeed " ]]) && \
+    if [[ " ${installed_components[@]} " =~ " nginx " ]] && \
        [[ " ${installed_components[@]} " =~ " mysql " ]] && \
        [[ " ${installed_components[@]} " =~ " php " ]]; then
         echo -e "2) ${BOLD}Create New WordPress Site${NC}"
@@ -1859,26 +1011,14 @@ list_wordpress_sites() {
         local site_path=$(dirname "$config")
         local db_name=$(grep DB_NAME "$config" | cut -d "'" -f 4)
         
-        # Try to determine domain from web server configs
+        # Try to determine domain from Nginx configs
         local domain=""
-        
-        if [ "$WEB_SERVER" = "nginx" ]; then
-            for conf in "$NGINX_AVAILABLE"/*.conf; do
-                if [ -f "$conf" ] && grep -q "$site_path" "$conf"; then
-                    domain=$(grep "server_name" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
-                    break
-                fi
-            done
-        elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-            if [ -d "$OLS_VHOSTS_DIR" ]; then
-                for vh_dir in "$OLS_VHOSTS_DIR"/*; do
-                    if [ -d "$vh_dir" ] && [ -f "$vh_dir/vhconf.conf" ] && grep -q "$site_path" "$vh_dir/vhconf.conf"; then
-                        domain=$(grep "vhDomain" "$vh_dir/vhconf.conf" | head -1 | awk '{print $2}')
-                        break
-                    fi
-                done
+        for conf in "$NGINX_AVAILABLE"/*.conf; do
+            if grep -q "$site_path" "$conf"; then
+                domain=$(grep "server_name" "$conf" | head -1 | awk '{print $2}' | sed 's/;$//')
+                break
             fi
-        fi
+        done
         
         printf "%-4s| %-24s| %-24s| %s\n" "$counter" "$site_path" "${domain:-Unknown}" "${db_name:-Unknown}"
         ((counter++))
@@ -1919,41 +1059,12 @@ show_system_info() {
         echo ""
     fi
     
-    if [ -f "/usr/local/lsws/bin/lshttpd" ]; then
-        echo -e "${BOLD}OpenLiteSpeed Version:${NC}"
-        /usr/local/lsws/bin/lshttpd -v 2>&1
+    # PHP Information
+    if command_exists php; then
+        echo -e "${BOLD}PHP Version:${NC}"
+        php -v | head -1
         echo ""
     fi
-    
-    # PHP Information - Show all installed versions
-    echo -e "${BOLD}PHP Versions:${NC}"
-    if command_exists php; then
-        echo -e "Active PHP version (CLI): $(php -v | head -1)"
-    fi
-    
-    # Check for installed PHP-FPM versions
-    echo -e "\nInstalled PHP-FPM versions:"
-    for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
-        if [ -d "/etc/php/$version/fpm" ]; then
-            local status=$(systemctl is-active php$version-fpm 2>/dev/null)
-            if [ "$status" = "active" ]; then
-                echo -e "- PHP $version: ${GREEN}Installed and Active${NC}"
-            else
-                echo -e "- PHP $version: ${YELLOW}Installed but Inactive${NC}"
-            fi
-        fi
-    done
-    
-    # Check for installed LSPHP versions
-    if [ -d "/usr/local/lsws" ]; then
-        echo -e "\nInstalled LSPHP versions for OpenLiteSpeed:"
-        for version in "${AVAILABLE_PHP_VERSIONS[@]}"; do
-            if [ -d "/usr/local/lsws/lsphp$version" ]; then
-                echo -e "- LSPHP $version: ${GREEN}Installed${NC}"
-            fi
-        done
-    fi
-    echo ""
     
     # MySQL Information
     if command_exists mysql; then
@@ -1974,32 +1085,14 @@ show_system_info() {
 install_complete_stack() {
     print_message "Installing Complete WordPress Stack" "header"
     
-    # Ask user to select web server
-    select_web_server
-    
-    # Ask user to select PHP version
-    select_php_version
-    
     # Update system packages
     update_system
     
-    # Install components one by one with clear status messages
-    if [ "$WEB_SERVER" = "nginx" ]; then
-        install_nginx
-    elif [ "$WEB_SERVER" = "openlitespeed" ]; then
-        install_openlitespeed
-    fi
-    
-    print_message "Installing MySQL database..." "header"
+    # Install components
+    install_nginx
     install_mysql
-    
-    print_message "Installing PHP..." "header"
     install_php
-    
-    print_message "Installing phpMyAdmin..." "header"
     install_phpmyadmin
-    
-    print_message "Installing Certbot for SSL..." "header"
     install_certbot
     
     print_message "WordPress stack installation completed successfully!" "success"
@@ -2043,27 +1136,9 @@ main() {
             2)
                 # Check if required components are installed
                 local installed_components=($(get_installed_components))
-                if ([[ " ${installed_components[@]} " =~ " nginx " ]] || [[ " ${installed_components[@]} " =~ " openlitespeed " ]]) && \
+                if [[ " ${installed_components[@]} " =~ " nginx " ]] && \
                    [[ " ${installed_components[@]} " =~ " mysql " ]] && \
                    [[ " ${installed_components[@]} " =~ " php " ]]; then
-                    
-                    # Determine which web server is installed
-                    if [[ " ${installed_components[@]} " =~ " nginx " ]]; then
-                        WEB_SERVER="nginx"
-                    elif [[ " ${installed_components[@]} " =~ " openlitespeed " ]]; then
-                        WEB_SERVER="openlitespeed"
-                    fi
-                    
-                    # Get active PHP version
-                    if command_exists php; then
-                        PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1-2)
-                    fi
-                    
-                    # Allow user to select a different PHP version if they want
-                    read -p "$(echo -e "${BLUE}Current PHP version is $PHP_VERSION. Do you want to use a different version? (y/n):${NC} ")" change_php
-                    if [ "$change_php" = "y" ]; then
-                        select_php_version
-                    fi
                     
                     collect_site_info
                     # Install WordPress
@@ -2087,10 +1162,6 @@ main() {
                     print_message "Database name: $WORDPRESS_DB_NAME" "info"
                     print_message "Database user: $WORDPRESS_DB_USER" "info"
                     print_message "Database password: $WORDPRESS_DB_PASSWORD" "info"
-                    
-                    if [ "$WEB_SERVER" = "openlitespeed" ]; then
-                        print_message "LiteSpeed Cache has been installed for better performance." "info"
-                    fi
                     
                     read -p "$(echo -e "${BLUE}Press Enter to return to the main menu...${NC} ")" pause
                 else
